@@ -1,0 +1,25 @@
+# ESP32-S3-N16R8 分区表 (16MB flash)
+#
+# 布局:
+#   0x9000   nvs        (24K)   WiFi 凭据 / 屏幕方向 / 音量
+#   0xf000   otadata    (8K)
+#   0x11000  phy_init   (4K)
+#   0x12000  ~0x20000          预留(56K)
+#   0x20000  model      (1M)   ★ esp-sr 唤醒词模型分区
+#                              esp-sr 的构建脚本(model/movemodel.py)会把选中的
+#                              「你好小智」模型打包成 srmodels.bin 并自动烧到这里,
+#                              运行期由 esp_srmodel_init("model") 读取。
+#   0x120000 factory    (4M)   应用固件
+#   0x520000 storage    (1M)   SPIFFS
+#
+# 注意1: app 分区的偏移必须是 64KB(0x10000) 对齐, 所以 model 放在 0x20000。
+# 注意2: 新增 model 分区后 factory 的偏移变了, 必须整片擦除再烧一次:
+#          idf.py -p COM5 erase-flash flash
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+otadata,    data, ota,      0xf000,   0x2000,
+phy_init,   data, phy,      0x11000,  0x1000,
+model,      data, spiffs,   0x20000,  0x100000,
+factory,    app,  factory,  0x120000, 0x400000,
+storage,    data, spiffs,   0x520000, 0x100000,

@@ -1,0 +1,6 @@
+## 临时: 用于获取 esp-sr 唤醒词组件(与官方 78/xiaozhi-esp32 同版本)
+## 下载完成后会把组件 vendor 到 components/ 下, 然后删除本文件
+dependencies:
+  idf:
+    version: ">=5.0.0"
+  espressif/esp-sr: "==2.4.7"

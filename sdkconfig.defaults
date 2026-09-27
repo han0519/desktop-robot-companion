@@ -1,0 +1,37 @@
+# 板级默认配置 — ESP32-S3-N16R8 (16MB flash + 8MB Octal PSRAM)
+# 注意: 这些值只有在 sdkconfig 里不存在时才会被采用,
+#       改完 sdkconfig 后本文件用于保证 fullclean 后配置不丢。
+
+# ---- Flash: 16MB ----
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# ---- PSRAM: 8MB Octal @80MHz ----
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# ---- 自定义分区表: app 4MB ----
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# ---- CPU 保持 160MHz ----
+# 瓶颈在 I2C(400kHz) 和刷新率, 不在 CPU; 160MHz 更省电(电池供电)。
+# 想榨性能就同时把下面两个都改成 240:
+#   CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+#   CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+
+# ---- esp-sr 唤醒词「你好小智」(WakeNet9) ----
+# 与官方 78/xiaozhi-esp32 的 sdkconfig.defaults.esp32s3 完全一致。
+# 模型由 esp-sr 的构建脚本从 model/ 目录打包成 srmodels.bin,
+# 自动烧进 partitions.csv 里名为 model 的那个分区(本工程给了 1MB)。
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
+
+# ---- CPU 240MHz (music decode needs it) ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y

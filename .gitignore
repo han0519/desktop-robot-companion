@@ -1,0 +1,19 @@
+﻿# ESP-IDF 构建产物
+build/
+sdkconfig.old
+
+# 组件管理器会按 idf_component.yml 自动下载
+managed_components/
+
+# IDE / 编辑器
+.cache/
+.vscode/
+.idea/
+
+# 登录 Cookie —— 等同账号密码, 绝对不能提交
+server/data/
+
+# 日志 / 系统文件
+*.log
+.DS_Store
+Thumbs.db
