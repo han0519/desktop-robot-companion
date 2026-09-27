@@ -47,6 +47,11 @@ docs/MUSIC_PROXY.md    音乐代理部署 + 扫码登录说明
 
 ## 快速开始
 
+### 0. 不想编译？直接下固件
+
+到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载 v1.0.0 的 6 个附件，
+按 Release 说明里的 esptool 一条命令烧录即可（`srmodels.bin` 是唤醒词模型，别漏）。
+
 ### 1. 烧录固件
 
 ```bash
