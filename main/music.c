@@ -20,6 +20,7 @@
 #include "face.h"         /* 播音乐时切到「听歌」表情 FACE_MUSIC */
 #include "light.h"        /* 音乐律动: light_music_start/level/stop */
 #include "persona.h"      /* 放歌也影响心情(心情+5) */
+#include "ne_client.h"    /* ★ 直连网易云(没有服务器时的默认方式) */
 
 /* 播音乐期间按住「听歌」表情。
    给一个足够长的时长(10 分钟, 比任何一首歌都长), 并在播放循环里周期性补按,
@@ -59,7 +60,9 @@ static const char *TAG = "music";
  *   3. 在网页控制台「音乐」页填入代理地址并保存(存 NVS, 掉电不丢)
  * 填好之前音乐功能会提示"未设置音乐代理地址"。 */
 #define MUS_DEFAULT_BASE  ""
-#define MUS_TASK_STACK    10240
+/* ★ 栈要够大: 这个任务里会跑 mbedTLS(HTTPS 取歌, 握手需要 8~16KB 栈),
+   还要叠解码器和 cJSON。原来 10KB 实测不够稳, 提到 24KB(放 PSRAM)。 */
+#define MUS_TASK_STACK    24576
 /* ★ 优先级 5 + 钉在核 1:
    核 0 上已经挤了 WiFi、舵机(prio6, 50Hz)、灯效、传感器、协议任务,
    音乐任务放核 0 抢不到 CPU 就会一卡一卡。核 1 只有音频(prio6)和表情(prio5),
@@ -125,10 +128,16 @@ static struct {
     char         pending_kw[MUS_NAME_LEN];   /* 待搜索的歌名 */
     volatile bool stop_req;
     volatile bool pause_req;
+    volatile bool skip_req;    /* "切下一首": 打断当前这首但继续播后面的
+                                  (以前只有 stop_req, music_next 实际等于停止) */
 } mus;
 
 /* 网页"只搜索不播放"的请求标志(见 music_search_only) */
 static volatile bool s_search_only = false;
+/* ★ 按歌手名搜索(见 music_search_artist_only): 本轮会话用歌手流程而不是歌名搜索 */
+static volatile bool s_artist_search = false;
+/* 音乐是否正在独占喇叭/CPU(暂停时为 false; 供 AI 让路判定用, 见 music_owns_audio) */
+static volatile bool s_owns_audio;
 
 /* ================= 我的歌单(网易云账号的歌单) =================
  * 代理实测支持:
@@ -199,6 +208,11 @@ static esp_http_client_handle_t http_open_range(const char *url, int timeout_ms,
     };
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return NULL;
+    /* ★ 直连时拉的是网易云 CDN, 它有防盗链 —— 必须带 Referer, 否则 403。
+       走代理时这个头无害。 */
+    esp_http_client_set_header(c, "Referer", "https://music.163.com/");
+    esp_http_client_set_header(c, "User-Agent",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     /* ★ 断点续传: 必须在 open() 之前设头(open 会立刻把请求发出去)。
        代理实测支持 Range(返回 206 + Content-Range), 所以网络断掉之后可以
        从断点接着放 —— 不重头、也不跳歌。 */
@@ -258,7 +272,9 @@ static esp_audio_simple_dec_type_t sniff_type(const uint8_t *b, int n)
         if (!memcmp(b, "fLaC", 4))   return ESP_AUDIO_SIMPLE_DEC_TYPE_FLAC;
         if (!memcmp(b, "RIFF", 4))   return ESP_AUDIO_SIMPLE_DEC_TYPE_WAV;
         if (!memcmp(b, "OggS", 4))   return ESP_AUDIO_SIMPLE_DEC_TYPE_OGG;
-        if (!memcmp(b + 4, "ftyp", 4)) return ESP_AUDIO_SIMPLE_DEC_TYPE_M4A;
+        /* ★ 要 n>=8 才能读 b+4..b+7: 嗅探可能只拿到 4 字节, 少这个检查会
+           读到未初始化的堆内存(可能误判成 M4A) */
+        if (n >= 8 && !memcmp(b + 4, "ftyp", 4)) return ESP_AUDIO_SIMPLE_DEC_TYPE_M4A;
         if (!memcmp(b, "ID3", 3))    return ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
         /* MP3 帧同步: 11 个 1 */
         if (b[0] == 0xFF && (b[1] & 0xE0) == 0xE0) return ESP_AUDIO_SIMPLE_DEC_TYPE_MP3;
@@ -269,18 +285,25 @@ static esp_audio_simple_dec_type_t sniff_type(const uint8_t *b, int n)
 }
 
 /* ======================= 搜索 ======================= */
+/* ★ 直连 还是 走代理?
+ *   没填代理地址(或填了 "direct") → 设备自己直连网易云 —— 这是默认方式,
+ *                                   因为开源用户没有服务器(见 ne_client.c)
+ *   填了 http://ip:3000           → 走自建代理(老方式, 留给自己有服务器的用户) */
+static bool mus_direct(void)
+{
+    return !mus.base[0] || strcmp(mus.base, "direct") == 0;
+}
+
+static bool mus_search(const char *kw);
+static bool mus_search_artist(const char *name);
+static bool mus_fill_results(cJSON *root, const char *fallback_kw);
+
 static bool mus_search(const char *kw)
 {
     mus.res_cnt = 0;
     mus.idx     = 0;
     /* 按歌名搜索时清掉"当前歌单名", 免得网页上还挂着上一次浏览的歌单名 */
     s_pl_cur_name[0] = '\0';
-
-    if (!mus.base[0]) {
-        snprintf(mus.err, sizeof(mus.err),
-                 "未设置音乐代理地址 —— 网页「音乐」页填入, 部署见 docs/MUSIC_PROXY.md");
-        return false;
-    }
 
     char enc[200];
     url_encode(kw, enc, sizeof(enc));
@@ -292,7 +315,15 @@ static bool mus_search(const char *kw)
     char *body = heap_caps_malloc(MUS_BODY_MAX, MALLOC_CAP_SPIRAM);
     if (!body) { snprintf(mus.err, sizeof(mus.err), "内存不足"); return false; }
 
-    int n = http_get_text(url, body, MUS_BODY_MAX);
+    int n;
+    if (mus_direct()) {
+        /* 直连: 设备自己算加密参数 + HTTPS 请求网易云。
+           ne_api_search 返回的 JSON 和代理格式完全一致, 下面的解析代码照旧用。 */
+        ne_api_search(kw, MUS_MAX_RESULTS, body, MUS_BODY_MAX);
+        n = (int)strlen(body);
+    } else {
+        n = http_get_text(url, body, MUS_BODY_MAX);
+    }
     ESP_LOGI(TAG, "搜索「%s」-> %d 字节: %.160s", kw, n, n > 0 ? body : "");
 
     if (n <= 0) {
@@ -306,13 +337,21 @@ static bool mus_search(const char *kw)
     }
 
     cJSON *root = cJSON_Parse(body);
+    bool ok = mus_fill_results(root, kw);
     free(body);
+    return ok;
+}
+
+/* 把 {"code":200,"data":[{id,name,artist}...]} 形态的搜索结果解析并装进 mus.res[]。
+ * 歌名搜索和歌手搜索共用(root 为 NULL 表示 body 解析失败)。调用方负责 free(body)。 */
+static bool mus_fill_results(cJSON *root, const char *fallback_kw)
+{
     if (!root) { snprintf(mus.err, sizeof(mus.err), "返回不是合法 JSON"); return false; }
 
     cJSON *code = cJSON_GetObjectItem(root, "code");
     if (code && cJSON_IsNumber(code) && code->valueint != 200) {
         cJSON *msg = cJSON_GetObjectItem(root, "message");
-        snprintf(mus.err, sizeof(mus.err), "代理报错 %d: %s",
+        snprintf(mus.err, sizeof(mus.err), "网易云接口错误 %d: %s",
                  code->valueint, (msg && cJSON_IsString(msg)) ? msg->valuestring : "?");
         cJSON_Delete(root);
         return false;
@@ -349,7 +388,7 @@ static bool mus_search(const char *kw)
         else                     snprintf(d->id, sizeof(d->id), "%d", jid->valueint);
 
         if (jnm && cJSON_IsString(jnm)) snprintf(d->name, sizeof(d->name), "%s", jnm->valuestring);
-        else                            snprintf(d->name, sizeof(d->name), "%s", kw);
+        else                            snprintf(d->name, sizeof(d->name), "%s", fallback_kw);
 
         if (jar && cJSON_IsString(jar)) snprintf(d->artist, sizeof(d->artist), "%s", jar->valuestring);
         else {
@@ -367,8 +406,30 @@ static bool mus_search(const char *kw)
     }
     cJSON_Delete(root);
 
-    if (mus.res_cnt == 0) { snprintf(mus.err, sizeof(mus.err), "没搜到「%s」", kw); return false; }
+    if (mus.res_cnt == 0) { snprintf(mus.err, sizeof(mus.err), "没搜到「%s」", fallback_kw); return false; }
     return true;
+}
+
+/* 按歌手名搜歌: 歌手 id → 热门歌曲 → 与歌名搜索同一套装列逻辑 */
+static bool mus_search_artist(const char *name)
+{
+    mus.res_cnt = 0;
+    mus.idx     = 0;
+    s_pl_cur_name[0] = '\0';
+
+    char aid[24], aname[96];
+    if (!ne_api_search_artist_id(name, aid, sizeof(aid), aname, sizeof(aname))) {
+        snprintf(mus.err, sizeof(mus.err), "没找到歌手「%s」", name);
+        return false;
+    }
+
+    char *body = heap_caps_malloc(MUS_BODY_MAX, MALLOC_CAP_SPIRAM);
+    if (!body) { snprintf(mus.err, sizeof(mus.err), "内存不足"); return false; }
+    ne_api_artist_hot(aid, MUS_MAX_RESULTS, body, MUS_BODY_MAX);
+    ESP_LOGI(TAG, "歌手「%s」(id=%s) 热门歌曲: %.80s", aname, aid, body);
+    bool ok = mus_fill_results(cJSON_Parse(body), name);
+    free(body);
+    return ok;
 }
 
 /* ======================= 播放一首 ======================= */
@@ -561,15 +622,19 @@ static void mus_net_stop(void)
 /* ---------- 拉"我的歌单"列表 ---------- */
 static void mus_fetch_playlists(void)
 {
-    if (!mus.base[0]) { snprintf(mus.err, sizeof(mus.err), "未设置音乐代理地址"); s_pl_ready = true; return; }
-
     char url[220];
     snprintf(url, sizeof(url), "%s/api/user/playlists", mus.base);
 
     char *body = heap_caps_malloc(MUS_BODY_MAX, MALLOC_CAP_SPIRAM);
     if (!body) { ESP_LOGE(TAG, "歌单: 内存不足"); s_pl_ready = true; return; }
 
-    int n = http_get_text(url, body, MUS_BODY_MAX);
+    int n;
+    if (mus_direct()) {
+        ne_api_playlists(body, MUS_BODY_MAX);
+        n = (int)strlen(body);
+    } else {
+        n = http_get_text(url, body, MUS_BODY_MAX);
+    }
     if (n <= 0) {
         ESP_LOGW(TAG, "我的歌单: 拉取失败(%d) %s", n, mus.err);
         free(body); s_pl_ready = true; return;
@@ -606,8 +671,6 @@ static void mus_fetch_playlists(void)
    装进去之后就复用了"搜索结果/点播/下一首"那一整套 UI 与逻辑, 不用另写一套。 */
 static void mus_fetch_playlist_songs(void)
 {
-    if (!mus.base[0]) { snprintf(mus.err, sizeof(mus.err), "未设置音乐代理地址"); s_pls_ready = true; return; }
-
     char url[300];
     /* ★ 分页必须用 limit + offset —— 实测代理不认 count 参数(会返回全部) */
     snprintf(url, sizeof(url), "%s/api/playlist/songs?id=%s&limit=%d&offset=0",
@@ -620,7 +683,13 @@ static void mus_fetch_playlist_songs(void)
     char *body = heap_caps_malloc(MUS_BODY_MAX, MALLOC_CAP_SPIRAM);
     if (!body) { ESP_LOGE(TAG, "歌单: 内存不足"); s_pls_ready = true; return; }
 
-    int n = http_get_text(url, body, MUS_BODY_MAX);
+    int n;
+    if (mus_direct()) {
+        ne_api_playlist_songs(s_pl_want_id, MUS_MAX_RESULTS, body, MUS_BODY_MAX);
+        n = (int)strlen(body);
+    } else {
+        n = http_get_text(url, body, MUS_BODY_MAX);
+    }
     if (n <= 0) {
         ESP_LOGW(TAG, "歌单 %s: 拉歌曲失败(%d)", s_pl_want_id, n);
         free(body); s_pls_ready = true; return;
@@ -659,7 +728,8 @@ static void mus_fetch_playlist_songs(void)
 /* 音频电平(0..1): 取这一帧的峰值。
  * 峰值比均方根更"跟鼓点" —— 鼓一响立刻顶到 1.0, 灯环的律动才跳得起来。
  * 每帧 1152 个样本, 开销可忽略。 */
-static float pcm_peak(const int16_t *p, int n)
+/* 已由 light_music_pcm() 取代(它同时算电平和 8 段频谱), 保留实现备用 */
+static float __attribute__((unused)) pcm_peak(const int16_t *p, int n)
 {
     int32_t pk = 0;
     for (int i = 0; i < n; i++) {
@@ -674,18 +744,23 @@ static void mus_play_one(void)
 {
     const mus_song_t *s = &mus.res[mus.idx];
 
-    if (!mus.base[0]) {
-        snprintf(mus.err, sizeof(mus.err), "未设置音乐代理地址");
-        mus.state = MUS_ERROR;
-        return;
-    }
-
     /* ★ 是"新的一首"还是"断点续传"? (见 s_resume_off 的说明) */
     bool resuming = (s_resume_off > 0);
     if (!resuming) { s_stream_pos = 0; s_resume_try = 0; }
 
-    char url[300];
-    snprintf(url, sizeof(url), "%s/api/stream?id=%s&br=128000", mus.base, s->id);
+    char url[512];
+    if (mus_direct()) {
+        /* 直连: 先向网易云要这首歌的 CDN 地址, 然后自己带 Referer 去拉流
+           (网易 CDN 有防盗链, 少了 Referer 会被拒绝) */
+        if (!ne_api_song_url(s->id, 128000, url, sizeof(url))) {
+            snprintf(mus.err, sizeof(mus.err),
+                     "这首歌拿不到播放地址(VIP/版权受限, 或未登录网易云)");
+            mus.state = MUS_SKIP;      /* 跳过, 外层会试下一个结果 */
+            return;
+        }
+    } else {
+        snprintf(url, sizeof(url), "%s/api/stream?id=%s&br=128000", mus.base, s->id);
+    }
 
     /* ★ 超时给 5 秒(原来 15 秒)。
        读任务卡在 socket 上时, cleanup 只能干等它自己回来 —— 15 秒太久,
@@ -790,7 +865,6 @@ static void mus_play_one(void)
     int64_t t_loop0  = esp_timer_get_time();
     int64_t t_dec_sum  = 0;     /* 解码累计耗时 */
     int64_t t_wr_sum   = 0;     /* 写 I2S 累计耗时 */
-    int64_t t_fill_sum = 0;     /* 挪数据 + 补网络数据 累计耗时 */
     int64_t t_move_sum = 0;     /* 其中: memmove 搬运 */
     int64_t t_read_sum = 0;     /* 其中: 读网络 */
     int64_t t_dmx_sum  = 0;     /* 降混 累计耗时 */
@@ -815,20 +889,26 @@ static void mus_play_one(void)
             }
         }
 
-        /* --- 暂停: 停在这里不动, 连接和缓冲都保持 ---
-           暂停期间把 AI 音频放开: 音乐不响了, 没有抢 CPU 和喇叭的理由,
-           用户可以正常喊小智。继续播放时再挂起。 */
+        /* --- 暂停: 【释放流资源和缓冲, 把内存还给 AI】---
+         *
+         * 需求: 摸头顶三下暂停后要能喊小智。
+         * 曾经这里只是"原地不动"(连接和缓冲都留着), 结果暂停期间 AI 依然不可用:
+         *   暂停时音乐会话仍占着 ~12KB 内部 RAM(解码器 + 流连接), 而 WebSocket
+         *   任务需要 7KB【连续】内存 → 建不起来 →
+         *       E websocket_client: Error create websocket task
+         *   用户摸三下暂停, 喊小智完全没反应(实测就是这个)。
+         * 现在: 记住播放位置后【直接跳出循环】, 让下面的收尾把解码器/HTTP 连接/
+         * 缓冲全部释放(实测内部 RAM 5.6KB → 17.9KB), AI 立刻恢复; 用户按继续时
+         * 用 HTTP Range 从断点续上, 几乎无感。 */
         if (mus.pause_req) {
             mus.state = MUS_PAUSED;
             ai_client_set_audio_suspended(false);
-            while (mus.pause_req && !mus.stop_req) {
-                mus.state = MUS_PAUSED;
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-            if (!mus.stop_req) {
-                ai_client_set_audio_suspended(true);
-                ESP_LOGI(TAG, "继续播放 → 重新挂起 AI 音频");
-            }
+            s_owns_audio = false;             /* 不再独占喇叭/CPU */
+            speaker_set_hold(false);          /* 功放也放开, AI 要能说话 */
+            s_resume_off = s_stream_pos;      /* ★ 记住位置, 继续时从这接着放 */
+            ESP_LOGW(TAG, "暂停: 释放流资源并把内存还给 AI (位置 %u 字节)",
+                     (unsigned)s_resume_off);
+            break;                            /* 跳出播放循环 → 收尾释放一切 */
         }
         if (mus.stop_req) break;
         mus.state = MUS_PLAYING;
@@ -897,7 +977,18 @@ static void mus_play_one(void)
         if (raw.consumed) off += raw.consumed;
 
         if (er == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH && out.needed_size > MUS_DEC_OUT_MAX) {
-            ESP_LOGW(TAG, "解码缓冲不够(需要 %u), 跳过这段", (unsigned)out.needed_size);
+            /* ★ 原来这里只 continue: 若解码器一个字节都没吃(raw.consumed==0),
+               同一段数据会被【反复重试】—— 死循环 + 每 20ms 刷一条 WARN, 用户
+               看到的就是"卡住不动、串口狂刷"。现在: 没吃就丢掉这段让外层补新数据,
+               并用 stall 计数兜底, 连续失败就放弃这首。 */
+            if (raw.consumed == 0) {
+                if (++stall >= 50) {
+                    ESP_LOGW(TAG, "解码器一直要更大的缓冲(需要 %u), 放弃这首", (unsigned)out.needed_size);
+                    break;
+                }
+                ESP_LOGD(TAG, "解码缓冲不够(需要 %u), 丢弃这段继续", (unsigned)out.needed_size);
+                off = have;
+            }
             continue;
         }
         if (er != ESP_AUDIO_ERR_OK || out.decoded_size == 0) {
@@ -948,16 +1039,16 @@ static void mus_play_one(void)
                 mono[i] = (int16_t)((a + b) / 2);
             }
             t_dmx_sum += esp_timer_get_time() - t_x0;
-            /* ★ 音乐律动: 把这一帧的峰值电平喂给灯环(0..1)。
-               取峰值而不是均方根, 因为峰值更"跟鼓点", 灯看起来是在跳动。 */
-            light_music_level(pcm_peak(mono, n));
+            /* ★ 音乐律动/频谱: 把这一帧的 PCM 喂给灯环 —— 里面会算峰值电平,
+               还会过 8 段滤波器组得到各频段能量(音乐频谱灯效的数据来源)。 */
+            light_music_pcm(mono, (size_t)n);
             int64_t t_w0 = esp_timer_get_time();
             speaker_write(mono, (size_t)n, 1000);
             t_wr_sum += esp_timer_get_time() - t_w0;
             mus.played_bytes += (uint32_t)(n * 2);
         } else {
             t_dmx_sum += esp_timer_get_time() - t_x0;
-            light_music_level(pcm_peak(pcm, frames));
+            light_music_pcm(pcm, (size_t)frames);
             int64_t t_w0 = esp_timer_get_time();
             speaker_write(pcm, (size_t)frames, 1000);
             t_wr_sum += esp_timer_get_time() - t_w0;
@@ -975,7 +1066,11 @@ static void mus_play_one(void)
        代理支持 HTTP Range(实测返回 206), 所以能真的接上, 用户几乎听不出断过。
        原来这里直接 idx++ 换歌, 用户听到的就是"歌播一半就没了"。
        只在这首确实播过内容、且续传次数没超限时才做, 避免死循环。 */
-    if (!mus.stop_req && died && s_stream_pos > 0 && s_resume_try < MUS_RESUME_MAX) {
+    if (mus.state == MUS_PAUSED) {
+        /* 暂停: 资源已在 cleanup 里释放, s_resume_off 保留播放位置(不能清零),
+           等外层"继续"时用 Range 从断点续上 */
+        ESP_LOGI(TAG, "暂停完成: 流资源已释放, 位置 %u 字节待续", (unsigned)s_resume_off);
+    } else if (!mus.stop_req && died && s_stream_pos > 0 && s_resume_try < MUS_RESUME_MAX) {
         s_resume_try++;
         s_resume_off = s_stream_pos;
         mus.state    = MUS_RESUME;
@@ -1015,11 +1110,28 @@ static void music_task(void *arg)
 
         mus.stop_req  = false;
         mus.pause_req = false;
+        mus.skip_req  = false;
         mus.state     = MUS_SEARCHING;
         mus.err[0]    = '\0';
+        /* ★ 断点续传状态必须在这里清零! s_resume_off/s_last_dtype 是"上一首"
+           留下的(暂停→停止 换歌的路径不会清它们), 不清的话新歌会带着旧歌的
+           字节偏移发 Range 请求、用旧歌的解码格式 —— 实测表现是"换歌后从
+           中间某处开始放杂音", 还可能连污染好几首。 */
+        s_resume_off  = 0;
+        s_last_dtype  = 0;
 
         if (mus.skip_search) {
             mus.skip_search = false;      /* 已给定 id, 直接播 */
+        } else if (s_artist_search) {
+            /* ★ 按歌手搜歌: 搜歌手 → 热门歌曲装列(不自动播) */
+            s_artist_search = false;
+            if (!mus_search_artist(mus.pending_kw)) {
+                ESP_LOGW(TAG, "歌手搜索失败: %s", mus.err);
+                mus.state   = MUS_ERROR;
+                mus.running = false;
+                vTaskDelay(pdMS_TO_TICKS(400));
+                continue;
+            }
         } else if (!mus_search(mus.pending_kw)) {
             ESP_LOGW(TAG, "搜索失败: %s", mus.err);
             mus.state   = MUS_ERROR;
@@ -1028,24 +1140,11 @@ static void music_task(void *arg)
             continue;
         }
 
-        /* ★ 音乐互斥: 进入播放前把整条 AI 音频链挂起。
-           唤醒词引擎 + Opus 编码每 60ms 就要吃一大块 CPU, 和音乐解码抢同一个核,
-           不挂起音乐必卡; 而且两者共用同一个功放, 会互相插话。
-           放在这里(搜完、真要出声之前)而不是 music_play() 里 ——
-           搜索阶段很快, 没必要让 AI 哑着。 */
-        ai_client_set_audio_suspended(true);
-        /* ★ 钉住功放: 播音乐时 speaker_write 会阻塞几百毫秒, 空闲任务会
-           误判成"空闲"而中途关断功放 → 声音断一块(实测日志里 840ms 就关了)。 */
-        speaker_set_hold(true);
-        /* ★ 灯环进入音乐律动(记住放歌前的灯效, 歌停自动恢复) */
-        light_music_start();
-        persona_event_music(true);
-        /* ★ 进入「听歌」表情, 并一直保持到整段音乐结束(见 MUSIC_FACE_HOLD_MS) */
-        face_set_emotion_hold(FACE_MUSIC, MUSIC_FACE_HOLD_MS);
-
         /* ★★ 网页"只搜索不播放": 搜完就收工, 歌单留给网页点选 ★★
-           必须放在【播放循环之前】—— 放在后面会把搜索结果的第 1 首顺带播出去
-           (实测: 网页只是点"搜索", 喇叭里已经响起来了)。 */
+           ★ 必须放在【挂起 AI / 切灯效 / 摆表情之前】: 下面这些副作用一旦
+             做了, 后面的恢复代码(循环尾部)会被 continue 跳过 —— 实测后果是
+             网页点一次搜索之后, AI 音频永久挂起(喊小智没反应)、灯环停在
+             律动、表情卡在"听歌"。 */
         if (s_search_only) {
             s_search_only = false;
             mus.state   = MUS_IDLE;
@@ -1054,17 +1153,87 @@ static void music_task(void *arg)
             continue;
         }
 
+        /* ★ 音乐互斥: 进入播放前把整条 AI 音频链挂起。
+           唤醒词引擎 + Opus 编码每 60ms 就要吃一大块 CPU, 和音乐解码抢同一个核,
+           不挂起音乐必卡; 而且两者共用同一个功放, 会互相插话。
+           放在这里(搜完、真要出声之前)而不是 music_play() 里 ——
+           搜索阶段很快, 没必要让 AI 哑着。 */
+           ai_client_set_audio_suspended(true);
+           s_owns_audio = true;           /* ★ 从这一刻起音乐独占喇叭/CPU */
+        /* ★ 不再"整首歌钉住功放" ★
+           以前为了防止播放中功放被误关, 整首歌都 speaker_set_hold(true) —— 那等于
+           让功放【常开】几分钟, 杜邦线/WiFi/舵机的串扰被一直放大, 就是"持续性
+           兹拉声"的来源。现在改由 speaker 组件内部的 s_writing 标记保证:
+           只要还在写数据(DMA 满时阻塞也算)就不会关断, 音乐一停/一暂停就立刻关,
+           串扰窗口从"整首歌"缩到"只在出声的瞬间"。 */
+        /* ★ 关于"放歌要不要单独降音量": 【不要】★
+         *
+         * 曾经这里把放歌音量改成"原音量 × 55%", 想法是防削波。实测踩坑:
+         * 扬声器音量是【平方律】(factor = (v/100)²), 70% → 38% 实际是
+         * 0.49 → 0.144, 也就是 −17dB —— 用户听来就是"放歌没声音了"。
+         * 而兹拉声的真正来源是功放常开时把杜邦线/WiFi/舵机的串扰放大了
+         * (见 speaker_max98357a.c 的注释), 靠降音量治不了。
+         * 结论: 音量交还给用户, 音乐用和其它音频一样的音量。 */
+        /* ★ 灯环进入音乐律动(记住放歌前的灯效, 歌停自动恢复) */
+        light_music_start();
+        persona_event_music(true);
+        /* ★ 进入「听歌」表情, 并一直保持到整段音乐结束(见 MUSIC_FACE_HOLD_MS) */
+        face_set_emotion_hold(FACE_MUSIC, MUSIC_FACE_HOLD_MS);
+
         /* 从当前下标开始连续播, 直到 stop。
            ★ 如果某首【放不了】(MUS_SKIP, 多为 VIP/版权受限), 会自动 idx++ 去
              试搜索结果里的下一首(翻唱/其他版本往往可以放); 只有 MUS_ERROR
              这种真正的故障才整轮放弃。 */
-        int nskip = 0, nstart = 0;
+        int nskip = 0, nstart = 0, err_retries = 0;
         while (!mus.stop_req && mus.idx < mus.res_cnt) {
             mus_play_one();
+            /* ★ "切下一首"(skip_req): stop_req 只负责打断当前这首的流,
+               打断之后要把 stop_req 收回来继续播下一首 —— 否则整个会话直接
+               结束, music_next 实际等于"停止"(踩过)。 */
+            if (mus.skip_req) {
+                mus.skip_req = false;
+                mus.stop_req = false;
+                mus.idx++;
+                continue;
+            }
             if (mus.stop_req) break;
-            if (mus.state == MUS_ERROR) break;
+            if (mus.state == MUS_ERROR) {
+                /* ★ 网络抖动重试: 实测拉播放地址时偶发 "Failed to create socket"
+                   (内部 RAM 瞬时紧张), 直接 break 会把整轮播放报废 —— 表现是
+                   "点了一首歌什么都没响就结束了"。先重试两次(等 800ms 让上一
+                   个连接的内存彻底释放), 还不行就跳过这首继续后面的, 别整轮放弃。 */
+                if (err_retries < 2) {
+                    err_retries++;
+                    ESP_LOGW(TAG, "播放网络故障(%s), 800ms 后重试(%d/2)", mus.err, err_retries);
+                    vTaskDelay(pdMS_TO_TICKS(800));
+                    continue;
+                }
+                err_retries = 0;
+                nskip++;
+                mus.idx++;
+                mus.state = MUS_SKIP;
+                continue;
+            }
+            err_retries = 0;
             /* ★ 网络断流: 不换歌, 同一首重进(内部会用 Range 从断点继续) */
             if (mus.state == MUS_RESUME) continue;
+            /* ★★ 暂停: 流资源已在 mus_play_one 收尾时释放(内存还给 AI)。
+               这里等用户按继续, 然后【同一首】重进 —— s_resume_off > 0 会让它
+               用 HTTP Range 从断点接着放, 不用重头开始。 */
+            if (mus.state == MUS_PAUSED) {
+                ESP_LOGI(TAG, "已暂停(内存已还给 AI, 可以喊小智了)");
+                while (mus.pause_req && !mus.stop_req) {
+                    mus.state = MUS_PAUSED;
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                }
+                if (mus.stop_req) break;
+                ai_client_set_audio_suspended(true);   /* 继续播放 → 重新挂起 AI */
+                s_owns_audio = true;
+                /* ★ 不要 speaker_set_hold(true)! 功放常开就是"持续性兹拉声"的
+                   来源(见上面注释), 首次播放已经不钉了, 续播同样不该钉。 */
+                ESP_LOGI(TAG, "继续播放 → 从第 %u 字节续上", (unsigned)s_resume_off);
+                continue;
+            }
             if (mus.state == MUS_SKIP) nskip++; else nstart++;
             mus.idx++;      /* 一首完了自动下一首 */
         }
@@ -1080,9 +1249,10 @@ static void music_task(void *arg)
         mus.state   = MUS_IDLE;
         mus.running = false;
         restore_voice_rate();
-        /* ★ 音乐结束 → 放开功放、立刻恢复 AI 音频, 用户可以马上喊小智 */
+        /* ★ 音乐结束 → 立刻恢复 AI 音频, 用户可以马上喊小智 */
         speaker_set_hold(false);
         ai_client_set_audio_suspended(false);
+        s_owns_audio = false;          /* 整段音乐结束 → 交还喇叭 */
         /* ★ 退出音乐律动, 灯环恢复放歌前的灯效 */
         light_music_stop();
         /* 表情回到平静, 让自动情绪循环接管 */
@@ -1140,7 +1310,7 @@ bool music_play(const char *song)
 {
     if (!song || !song[0]) return false;
     /* 已经在放 -> 先停, 再换歌 */
-    if (mus.running) { mus.stop_req = true; for (int i = 0; i < 60 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50)); }
+    if (mus.running) { mus.stop_req = true; for (int i = 0; i < 200 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50)); }
     snprintf(mus.pending_kw, sizeof(mus.pending_kw), "%s", song);
     mus.running = true;
     return true;
@@ -1152,7 +1322,7 @@ bool music_play_id(const char *song_id)
     /* 等待上一轮真正停下来(和 music_play 同样的做法) */
     if (mus.running) {
         mus.stop_req = true;
-        for (int i = 0; i < 60 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50));
+        for (int i = 0; i < 200 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     /* ★ 如果这首就在当前搜索结果里(网页点选的正是这种), 【不要清空列表】——
@@ -1201,7 +1371,7 @@ bool music_search_only(const char *kw)
      * 做法和 music_play / music_play_id 保持一致: 设 stop_req 再等它停。 */
     if (mus.running) {
         mus.stop_req = true;
-        for (int i = 0; i < 60 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50));
+        for (int i = 0; i < 200 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50));
     }
 
     snprintf(mus.pending_kw, sizeof(mus.pending_kw), "%s", kw);
@@ -1214,6 +1384,26 @@ bool music_search_only(const char *kw)
 }
 
 bool music_search_pending(void) { return s_search_only; }
+
+/* ★ 按歌手名搜歌(网页「搜歌手」按钮): 搜到歌手 → 热门歌曲 30 首装进列表,
+ * 不自动播, 等网页点选 —— 和歌名搜索的交互完全一致。
+ * 会话标志 s_artist_search 在任务里被消费, 见会话起点的分支。 */
+bool music_search_artist_only(const char *name)
+{
+    if (!name || !name[0]) return false;
+
+    if (mus.running) {
+        mus.stop_req = true;
+        for (int i = 0; i < 200 && mus.running; i++) vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    snprintf(mus.pending_kw, sizeof(mus.pending_kw), "%s", name);
+    mus.skip_search = false;
+    s_search_only   = true;      /* 装完列表不自动播 */
+    s_artist_search = true;      /* 本轮走"歌手"流程 */
+    mus.running     = true;
+    return true;
+}
 
 /* 把当前歌单(搜索结果)导成 JSON 给网页。
    歌名/歌手里的双引号会破坏 JSON, 统一换成单引号。 */
@@ -1294,10 +1484,25 @@ void music_next(void)
 {
     if (!mus.running) return;
     mus.idx++;              /* 跳过当前这首 */
-    mus.stop_req = true;    /* 打断当前播放, 任务会从新的 idx 继续 */
+    /* 两个标志一起: stop_req 打断当前流; skip_req 让播放循环打断后继续
+       下一首而不是结束整个会话(见播放循环里的处理)。 */
+    mus.skip_req = true;
+    mus.stop_req = true;
+    mus.pause_req = false;  /* 暂停中切歌: 先别卡在暂停等待里 */
 }
 
 bool music_is_active(void)  { return mus.running; }
+
+/* ★★ 音乐是否正在【独占】喇叭和 CPU ★★
+ *
+ * 必须和 music_is_active() 区分开:
+ *   music_is_active()  = "音乐会话还在"(暂停时也是 true)
+ *   music_owns_audio() = "音乐正在出声, 喇叭/CPU 归它"(暂停 → false)
+ * AI 该不该让路要看后者。之前用错了前者, 结果:
+ *   摸三下暂停 → 会话还在 → AI 的 WebSocket 被判"音乐中, 不许重建"
+ *   → 设备再也连不上服务器 → 喊小智完全没反应。
+ * (暂停时音乐不出声, 没有任何理由继续霸占喇叭。) */
+bool music_owns_audio(void) { return s_owns_audio; }
 bool music_is_playing(void) { return mus.state == MUS_PLAYING; }
 
 const char *music_status_str(void)
@@ -1314,8 +1519,8 @@ const char *music_status_str(void)
     }
     if ((mus.state == MUS_ERROR || mus.state == MUS_SKIP) && mus.err[0])
         snprintf(buf, sizeof(buf), "%s: %.160s", st, mus.err);
-    else if (!mus.base[0])
-        snprintf(buf, sizeof(buf), "未设置代理地址(网页「音乐」页填入)");
+    else if (mus_direct() && !ne_client_logged_in())
+        snprintf(buf, sizeof(buf), "网易云未登录 —— 到「音乐」页扫码登录");
     else if (mus.idx < mus.res_cnt && mus.res[mus.idx].name[0])
         snprintf(buf, sizeof(buf), "%s: %s - %s", st,
                  mus.res[mus.idx].name, mus.res[mus.idx].artist);
@@ -1327,6 +1532,23 @@ const char *music_status_str(void)
 void music_set_base(const char *url)
 {
     if (!url || !url[0]) return;
+    /* ★ 安全加固: 这个地址会被 AI(MCP 工具 self.music.set_server)和网页写入,
+       之后所有音乐请求都发往它。不校验的话, 一句提示词注入就能把设备流量
+       导向任意主机。这里要求: 必须是 http/https, 长度有限, 且不含空白/控制字符。 */
+    if (strncmp(url, "http://", 7) != 0 && strncmp(url, "https://", 8) != 0) {
+        ESP_LOGW(TAG, "代理地址必须是 http:// 或 https:// 开头, 已拒绝: %.40s", url);
+        return;
+    }
+    if (strlen(url) >= sizeof(mus.base)) {
+        ESP_LOGW(TAG, "代理地址过长(%u), 已拒绝", (unsigned)strlen(url));
+        return;
+    }
+    for (const char *p = url; *p; p++) {
+        if ((unsigned char)*p <= ' ' || (unsigned char)*p >= 0x7f) {
+            ESP_LOGW(TAG, "代理地址含空白/控制字符, 已拒绝");
+            return;
+        }
+    }
     snprintf(mus.base, sizeof(mus.base), "%s", url);
     nvs_handle_t h;
     if (nvs_open("music", NVS_READWRITE, &h) == ESP_OK) {

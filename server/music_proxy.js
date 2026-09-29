@@ -88,7 +88,11 @@ function loadCookieStr () {
   try { return fs.readFileSync(COOKIE_FILE, 'utf8').trim() } catch (e) { return '' }
 }
 
-/* 把 Set-Cookie 数组合并进现有 cookie 串 */
+/* 把 Set-Cookie 合并进现有 cookie 串
+ * ★ 必须兼容两种情况: Node 的 res.headers['set-cookie'] 有【一个】cookie 时是
+ *   字符串, 有多个时才是数组。以前直接 `(setCookies||[]).forEach(...)`, 遇到字符串
+ *   就抛 "(setCookies || []).forEach is not a function" → 每个接口都 500。
+ *   实测表现: 代理一启动就所有请求 500, 但日志只在那行显示这个错。 */
 function mergeSetCookies (oldStr, setCookies) {
   const map = {}
   const eat = s => String(s || '').split(';').forEach(kv => {
@@ -96,7 +100,8 @@ function mergeSetCookies (oldStr, setCookies) {
     if (i > 0) map[kv.slice(0, i).trim()] = kv.slice(i + 1).trim()
   })
   eat(oldStr)
-  ;(setCookies || []).forEach(sc => eat(sc.split(';')[0]))
+  const list = Array.isArray(setCookies) ? setCookies : (setCookies ? [setCookies] : [])
+  list.forEach(sc => eat(String(sc).split(';')[0]))
   return Object.entries(map).map(([k, v]) => `${k}=${v}`).join('; ')
 }
 
@@ -175,11 +180,17 @@ async function callWeapi (urlPath, data) {
   return parseJsonLoose(r.body)
 }
 
-/* eapi 调用 (需要 cookie 才能拿到完整歌曲地址) */
+/* eapi 调用 (需要 cookie 才能拿到完整歌曲地址)
+ * ★★★ 必须拼上 /eapi 前缀! ★★★
+ * eapi 的真实地址是 https://interface3.music.163.com【/eapi】/api/song/...,
+ * 而加密签名用的"逻辑路径"是不带 /eapi 的 /api/song/... —— 这是 eapi 的两套前缀设计。
+ * 以前直接把 urlPath 当地址用(少了 /eapi), 网易云一律回
+ *     {"msg":"参数错误","code":400}
+ * 固件 main/ne_client.c 有同一个 bug, 已一并修。 */
 async function callEapi (urlPath, data) {
   const { params } = eapi(urlPath, data)
   const body = `params=${params}`
-  const r = await httpsPost('interface3.music.163.com', urlPath, body, {
+  const r = await httpsPost('interface3.music.163.com', '/eapi' + urlPath, body, {
     Cookie: cookieHeader()
   })
   return parseJsonLoose(r.body)
@@ -241,10 +252,21 @@ async function apiPlaylistSongs (q) {
 
 /* 取真实播放地址; 拿不到( VIP/版权 )返回 null */
 async function apiSongUrl (id, br) {
-  const d = await callEapi('/api/song/enhance/player/url',
-    { ids: `[${id}]`, br: Number(br) || 128000, header: { os: 'pc', appver: '2.9.7' } })
+  /* ★ 网易云现在用 /url/v1 + level(音质档位); 老的 /url + br 会回
+       {"msg":"参数错误","code":400}(2025 年起实测如此)。
+       level: standard / higher / exhigh / lossless / hires */
+  const d = await callEapi('/api/song/enhance/player/url/v1',
+    {
+      ids: `[${id}]`,
+      level: 'exhigh',
+      encodeType: 'mp3',
+      header: { os: 'pc', appver: '8.9.70', osver: 'Microsoft-Windows-10--build-22631-64bit' }
+    })
   const item = d.data && d.data[0]
-  if (!item || !item.url || item.code !== 200) return null
+  if (!item || !item.url || item.code !== 200) {
+    console.log('[song] 取地址失败:', JSON.stringify(d).slice(0, 200))
+    return null
+  }
   return item.url
 }
 
@@ -388,7 +410,10 @@ const server = http.createServer(async (req, res) => {
       /* 透传 Range(固件的断点续传依赖它) */
       const h = { Referer: 'https://music.163.com/', 'User-Agent': 'Mozilla/5.0' }
       if (req.headers.range) h.Range = req.headers.range
-      const up = https.get(real, { headers: h }, up => {
+      /* ★ 网易云的直链是 http:// 的(m701/m801.music.126.net), 必须按协议选模块。
+         以前一律用 https.get → 抛 'Protocol "http:" not supported' → 接口 500。 */
+      const lib = real.startsWith('http://') ? http : https
+      const up = lib.get(real, { headers: h }, up => {
         const head = { 'Content-Type': up.headers['content-type'] || 'application/octet-stream' }
         if (up.headers['content-length']) head['Content-Length'] = up.headers['content-length']
         if (up.headers['content-range'])  head['Content-Range'] = up.headers['content-range']

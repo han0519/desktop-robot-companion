@@ -13,7 +13,14 @@ managed_components/
 # 登录 Cookie —— 等同账号密码, 绝对不能提交
 server/data/
 
+# 固件备份(二进制, 不进仓库; 正式发布走 GitHub Release)
+firmware_backup_*/
+
+# 测试临时截图
+docs/_*.png
+
 # 日志 / 系统文件
 *.log
 .DS_Store
 Thumbs.db
+

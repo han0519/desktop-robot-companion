@@ -35,6 +35,9 @@ void music_next(void);          /* 播放搜索结果里的下一首 */
 
 /* 是否正在播放/暂停中(占着喇叭) */
 bool music_is_active(void);
+/* 音乐是否正在独占喇叭/CPU(暂停时返回 false) —— AI 让路判定用这个, 不要用
+   music_is_active(), 否则"暂停后喊小智没反应"。 */
+bool music_owns_audio(void);
 bool music_is_playing(void);
 
 /* 状态字符串, 给 MCP / 网页 / 串口看 */
@@ -44,6 +47,8 @@ const char *music_status_str(void);
  * 只搜索、不播放(异步): 结果留在内部歌单里, 之后用 music_results_json 取,
  * 网页点某一首时再调 music_play_id()。 */
 bool music_search_only(const char *keyword);
+/* 按歌手名搜歌: 搜到歌手 → 热门歌曲装进列表(不自动播, 网页点选) */
+bool music_search_artist_only(const char *name);
 bool music_search_pending(void);   /* 搜索还在进行中 */
 /* 把当前曲目列表(搜索结果 或 已加载的歌单)导成 JSON:
    {"count":n,"idx":i,"playing":bool,"busy":bool,"src":"来源名","items":[...]} */

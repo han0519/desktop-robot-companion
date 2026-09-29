@@ -80,6 +80,8 @@ static esp_err_t ssd1305_write_cmd(const uint8_t *cmd, size_t len)
 static esp_err_t ssd1305_write_display_data(uint8_t page_start, uint8_t page_end)
 {
     if (!s_dev) return ESP_FAIL;
+    /* 面板判定为"不在"时直接跳过: 不碰 I2C、不刷日志(见 note_result 注释) */
+    if (ssd1305_absent()) return ESP_ERR_INVALID_STATE;
     if (page_start >= SSD1305_PAGES) page_start = 0;
     if (page_end >= SSD1305_PAGES) page_end = SSD1305_PAGES - 1;
     if (page_end < page_start) return ESP_OK;
@@ -227,14 +229,47 @@ static esp_err_t ssd1305_bus_reinit(void)
     return ret;
 }
 
-/* 传输结果记账: 连续失败到阈值就自愈。成功一次就清零。 */
+/* 传输结果记账: 连续失败到阈值就自愈。成功一次就清零。
+ *
+ * ★ 面板不在(没接屏)时必须有退避 ★
+ * 实测: 没接 OLED 的板子, 屏幕刷新每 20ms 失败一次 → 日志 45 秒刷 2500 行
+ * ("I2C 连续失败 10 次 → 触发总线自愈" / "总线自愈 失败"), 把有用的日志全淹了,
+ * 而且每次都在真的跑 I2C + 重建总线, 白烧 CPU。
+ * 现在: 自愈也救不回来就判定"面板不在", 静默一段时间(30s→60s→…最多 5 分钟)
+ * 再试; 这期间所有写操作直接返回, 一条日志都不打。 */
+static volatile TickType_t s_absent_start;   /* 静默期起点(0 = 正常) */
+static TickType_t          s_absent_len;     /* 静默期长度(tick) */
+static uint32_t            s_absent_span_ms = 30000;
+
+bool ssd1305_absent(void)
+{
+    if (!s_absent_start) return false;
+    return (TickType_t)(xTaskGetTickCount() - s_absent_start) < s_absent_len;
+}
+
 static void note_result(esp_err_t e)
 {
-    if (e == ESP_OK) { s_fail = 0; return; }
-    if (++s_fail >= SSD1305_FAIL_RECOVER_TH) {
-        ESP_LOGW(TAG, "I2C 连续失败 %d 次 → 触发总线自愈", s_fail);
+    if (e == ESP_OK) {
         s_fail = 0;
-        ssd1305_bus_reinit();
+        if (s_absent_start) {
+            s_absent_start    = 0;
+            s_absent_span_ms  = 30000;
+            ESP_LOGI(TAG, "OLED 回来了(面板已就绪), 恢复正常刷新");
+        }
+        return;
+    }
+    if (ssd1305_absent()) return;                 /* 静默期内不数、不刷日志 */
+    if (++s_fail >= SSD1305_FAIL_RECOVER_TH) {
+        s_fail = 0;
+        esp_err_t r = ssd1305_bus_reinit();
+        if (r != ESP_OK) {
+            s_absent_start = xTaskGetTickCount();
+            s_absent_len   = pdMS_TO_TICKS(s_absent_span_ms);
+            ESP_LOGW(TAG, "OLED 不在(自愈也失败) → 静默 %u 秒后重试, 这期间不再刷新",
+                     (unsigned)(s_absent_span_ms / 1000));
+            s_absent_span_ms = s_absent_span_ms * 2;
+            if (s_absent_span_ms > 300000) s_absent_span_ms = 300000;
+        }
     }
 }
 
@@ -277,6 +312,11 @@ esp_err_t ssd1305_init(i2c_port_t port, int sda_pin, int scl_pin, uint32_t clk_s
     ret = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "add device failed: %s", esp_err_to_name(ret));
+        /* ★ 失败路径也要收尾: ① 总线不删, 下次 init 会重复 i2c_new_master_bus
+           ② 锁不给, 会永久卡死(别的任务再也拿不到)。两样都必须放掉。 */
+        if (s_bus) { i2c_del_master_bus(s_bus); s_bus = NULL; }
+        if (s_lock) xSemaphoreGiveRecursive(s_lock);
+        s_in_recover = false;
         return ret;
     }
 

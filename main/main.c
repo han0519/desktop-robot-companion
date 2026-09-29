@@ -1,4 +1,4 @@
-/*
+﻿/*
  * main.c — 机器人伴侣项目主程序
  *
  * 功能:
@@ -30,6 +30,7 @@
 
 #include "config.h"
 #include "ssd1305.h"
+#include "datapage.h"     /* BOOT 短按: 表情页 ↔ 数据页(时间+温湿度) */
 #include "face.h"
 #include "servo.h"
 #include "ws2812.h"
@@ -43,9 +44,12 @@
 #include "speaker_max98357a.h"
 #include "xiaozhi.h"
 #include "persona.h"
+#include "ne_probe.h"
+#include "ne_client.h"
 #include "web_page.h"
 #include "prov_page.h"
 #include "wifi_screen.h"
+#include "cJSON.h"        /* cJSON_InitHooks: 把 JSON 的内存放到 PSRAM(见 app_main) */
 
 static const char *TAG = "main";
 
@@ -72,20 +76,80 @@ static struct {
  *   配过网   → 直接进表情系统, 后台连路由
  *
  * 屏幕只有一块: 配网阶段画配网页, 其余时间归表情引擎, 二选一, 不能同时刷。 */
-static bool     s_provisioning = true;    /* true = 屏幕归配网页 */
+    /* ★ 开机【一律为 false】: 30 秒内正常连上网就该静默 —— 不显示配网页、
+       也不播任何提示。只有 WIFI_CONNECT_TIMEOUT_MS(30s) 内还没连上, 才置 true
+       显示「配网模式」并播报提醒(见主循环里的超时分支)。
+       (以前默认 true, 导致没存过 WiFi 的板子一开机就弹配网页 + 播提示。) */
+static bool     s_provisioning = false;   /* true = 屏幕归配网页 */
 static bool     s_provisioned  = false;   /* NVS 里是否已有 WiFi 配置 */
 static uint32_t s_prov_ok_ms   = 0;       /* 配网成功时刻(0=未成功) */
 static uint32_t s_wifi_fail_ms = 0;       /* STA 开始连不上的时刻(0=未在重试) */
 static char     s_target_ssid[33];        /* 当前要连的 SSID (只用于日志) */
+static bool     s_wifi_cfg_ok;            /* NVS 里是否配过 WiFi(没配过就只开热点+可扫描) */
 #define WIFI_OK_HOLD_MS 2000              /* 成功后停留展示 IP 的时长 */
 #define WIFI_CONNECT_TIMEOUT_MS 30000     /* 连不上这么久 → 退回配网模式 */
 
 /* 热点名/密码: 配网页要显示, 所以声明在 face_task 之前 */
-#define AP_SSID  "RobotFace"
+/* 配网热点名。用中文是刻意的: 手机上更醒目("小纸壳"= 这个机器人的壳) */
+#define AP_SSID  "小纸壳"
 #define AP_PASS  "12345678"
 
 /* STA 联网状态 (小智 AI 需要外网) */
 static bool s_sta_connected = false;
+
+/* =========================================================================
+   配网播报(小智的基本逻辑: 进配网要"提示"用户)
+ * -------------------------------------------------------------------------
+ * 小智固件在没网时: 屏幕显示配网信息 + 蓝灯闪烁 + 播一段提示音。本设备没有网络时
+ * 用不了 AI 语音; 本地中文语音合成(esp-sr 的 esp_tts)要 2.8MB 语音库, 而当前
+ * 应用分区只有 4MB(固件已占 1.4MB), 塞不下 —— 所以这里用【一段上行的和弦提示音】
+ * + 屏幕 + 蓝灯呼吸来做提示, 效果同样可预期。将来若扩大分区, 可以换成真语音。
+ * ========================================================================= */
+static volatile bool s_prov_announced = false;
+
+static void prov_chime_task(void *arg)
+{
+    (void)arg;
+    speaker_beep(523, 130);   /* C5 */
+    vTaskDelay(pdMS_TO_TICKS(150));
+    speaker_beep(659, 130);   /* E5 */
+    vTaskDelay(pdMS_TO_TICKS(150));
+    speaker_beep(784, 190);   /* G5 —— 上行的"请注意"提示音 */
+    vTaskDelete(NULL);
+}
+
+static void prov_ok_chime_task(void *arg)
+{
+    (void)arg;
+    speaker_beep(784, 120);
+    vTaskDelay(pdMS_TO_TICKS(130));
+    speaker_beep(1046, 180);  /* 更高的两声 = 连上了 */
+    vTaskDelete(NULL);
+}
+
+/* ★ 配网占用的灯要能还回去: 进配网时记住用户原来的主色+灯效,
+ * 配网完成时恢复 —— 否则蓝灯呼吸永远亮着(实测踩到) */
+static bool          s_prov_light_saved = false;
+static light_effect_t s_prov_saved_eff  = LIGHT_OFF;
+static uint8_t        s_prov_saved_r, s_prov_saved_g, s_prov_saved_b;
+
+static void prov_announce(void)
+{
+    if (s_prov_announced) return;      /* 只播一次, 别刷屏 */
+    s_prov_announced = true;
+    if (!s_prov_light_saved) {
+        s_prov_saved_eff = light_get_effect();
+        light_get_color(&s_prov_saved_r, &s_prov_saved_g, &s_prov_saved_b);
+        s_prov_light_saved = true;
+    }
+    light_set_color(0, 110, 255);      /* 蓝灯 = 配网状态(和小智一致) */
+    light_set_effect(LIGHT_BREATHE);
+    ESP_LOGW(TAG, "播报: 进入配网模式 —— 手机连热点「%s」后打开 192.168.4.1 填 WiFi", AP_SSID);
+    if (xTaskCreatePinnedToCoreWithCaps(prov_chime_task, "provchim", 6144, NULL, 5, NULL, 1,
+                                        MALLOC_CAP_SPIRAM) != pdPASS) {
+        ESP_LOGW(TAG, "配网提示音任务创建失败(内存不足)");
+    }
+}
 static char s_sta_ip[16] = "-";
 
 /* NVS 配置读写 (真正实现在下面, 这里前置声明供 /reprov 等使用) */
@@ -128,7 +192,9 @@ static void selftest_task(void *arg)
  * 自检任务的栈较大, 如果开机就建好并一直等 WS, 会长期占住内部 RAM,
  * 把 WebSocket 任务要的 24KB 挤掉 → "Error create websocket task" → 死锁。
  * 自检栈本身放到 PSRAM(它只跑 CPU 代码, 不碰 DMA), 不占内部 RAM。 */
-static void selftest_watch_task(void *arg)
+/* 这两个是开发期诊断任务(栈水位/自检), 平时不启用 —— 保留实现但标为可能未使用,
+   免得每版都被 -Wunused 刷警告。想用的时候去掉 #if 0 / 直接创建任务即可。 */
+static void __attribute__((unused)) selftest_watch_task(void *arg)
 {
     if (!selftest_first_boot()) {
         ESP_LOGI(TAG, "自检: NVS 标志显示本次开机已跑过, 跳过");
@@ -157,7 +223,7 @@ static void selftest_watch_task(void *arg)
  * usStackHighWaterMark = 该任务历史最小剩余栈(单位:字, 1 字 = 4 字节)。
  * 低于约 200 字就非常危险 —— 需要调大对应任务的栈。
  * 这是定位「栈溢出崩溃」最直接的手段。 */
-static void stack_mon_task(void *arg)
+static void __attribute__((unused)) stack_mon_task(void *arg)
 {
     static TaskStatus_t st[28];
     while (1) {
@@ -187,18 +253,28 @@ static void face_task(void *arg)
         if (dt > 100) dt = 33;  /* 防止异常大跳 */
 
         if (s_provisioning) {
-            /* 配网阶段: 只刷配网页 */
+            /* 配网阶段: 只刷配网页 + 播报一次(提示音 + 蓝灯 + 日志) */
             wifi_screen_tick(now);
+            prov_announce();
             if (s_prov_ok_ms && (now - s_prov_ok_ms) >= WIFI_OK_HOLD_MS) {
                 s_prov_ok_ms   = 0;
                 s_provisioning = false;
+                s_prov_announced = false;   /* 已离开配网 → 下次再进还会重新播报 */
+                /* ★ 灯还给用户: 恢复进配网前的主色和灯效(蓝灯呼吸别常亮) */
+                if (s_prov_light_saved) {
+                    light_set_rgb(s_prov_saved_r, s_prov_saved_g, s_prov_saved_b);
+                    light_set_effect(s_prov_saved_eff);
+                    s_prov_light_saved = false;
+                    ESP_LOGI(TAG, "灯已恢复: %s", light_effect_cn(s_prov_saved_eff));
+                }
                 face_set_auto_cycle(true);
                 face_set_emotion(FACE_HELLO);
                 face_force_full();      /* 整屏覆盖配网页, 不留残影 */
                 ESP_LOGI(TAG, "配网完成 → 进入表情系统, 说「你好小智」即可对话");
             }
         } else {
-            face_update(dt);
+            if (datapage_active()) datapage_update(dt);   /* 数据页接管屏幕 */
+        else face_update(dt);
 
             /* 已配网但一直连不上(密码错/路由不在): 超时后退回配网页, 否则用户永远
                回不到配网流程。路由恢复后会自动重连并自动切回表情, 不用重启。 */
@@ -340,6 +416,8 @@ static void env_task(void *arg)
             s_state.env_valid = true;
             s_state.last_env_read = esp_timer_get_time() / 1000;
             ESP_LOGD(TAG, "temp=%.1fC hum=%.1f%%", s_state.env.temperature, s_state.env.humidity);
+            /* 数据页(时间+温湿度)直接吃这份数据 */
+            datapage_set_env(s_state.env.temperature, s_state.env.humidity, true);
         }
     }
 }
@@ -348,7 +426,10 @@ static void env_task(void *arg)
 /* 头部触摸手势参数 */
 #define TOUCH_TAP_MAX_MS     350     /* 短于这个算"点一下" */
 #define TOUCH_LONG_MS        800     /* 超过这个算长按 */
-#define TOUCH_DOUBLE_GAP_MS  380     /* 两次点击的最大间隔(连击窗口) */
+/* ★ 连击窗口 380→500ms: 实测普通人自然地摸三下的间隔经常在 400~500ms,
+ * 380 会把三连击误判成"双击切灯 + 单击撸猫" —— 表现就是"放歌时摸头不暂停"。
+ * 代价只是单击确认(撸猫)晚 ~120ms 出来, 无感。 */
+#define TOUCH_DOUBLE_GAP_MS  500     /* 两次点击的最大间隔(连击窗口) */
 #define PURR_HOLD_MS         2500    /* 撸猫表情保持时长 */
 #define TOUCH_DEBOUNCE_MS    60      /* 电平稳定多久才算真的按下/松开(抗干扰) */
 #define TOUCH_BOOT_IGNORE_MS 5000    /* 开机这段时间内不认手势(上电抖动会把灯打开) */
@@ -418,9 +499,15 @@ static void sensor_task(void *arg)
         bool gesture_locked = ai_busy ||
                              ((now - last_gesture_ms) < TOUCH_GESTURE_GAP_MS);
 
-        if (head_touched && !last_head_touch && !gesture_locked) {
+        if (head_touched && !last_head_touch) {
+            /* ★ 无论如何都要记下按下时刻:
+               以前这里要求 !gesture_locked 才赋值, 于是"在冷却/AI 播报期间按下"
+               时 head_touch_start 还是旧值(或 0), 松手时算出来的 dur 是个巨大
+               数值 → 必然落进下面的 dur > TOUCH_TAP_MAX_MS 分支照样撸猫,
+               手势冷却形同虚设(开机第一次触摸尤其明显)。
+               现在: 时刻照记, 但冷却期内按下的这一下直接标为"已消耗"。 */
             head_touch_start = now;
-            long_fired = false;
+            long_fired = gesture_locked;   /* true = 本次触摸已被吃掉, 不生效 */
         }
         /* 长按: 按住的当下就撸猫, 不用等松手 */
         if (head_touched && !long_fired &&
@@ -489,7 +576,6 @@ static void sensor_task(void *arg)
 /* ========== BOOT 键检测 (主循环) ========== */
 static void boot_button_task(void *arg)
 {
-    int current_emotion = 0;
     bool last_level = true;  /* BOOT 默认高电平 */
 
     while (1) {
@@ -508,33 +594,8 @@ static void boot_button_task(void *arg)
             if (duration < 50) {
                 /* 抖动, 忽略 */
             } else if (duration < 1000) {
-                /* 短按: 切换表情 */
-                current_emotion = (current_emotion + 1) % FACE_COUNT;
-                face_set_emotion((face_emotion_t)current_emotion);
-                ESP_LOGI(TAG, "BOOT short press → emotion=%s",
-                         face_emotion_name((face_emotion_t)current_emotion));
-                /* 表情联动舵机 */
-                switch (current_emotion) {
-                    case FACE_HAPPY:
-                        servo_nod_head();
-                        break;
-                    case FACE_ANGRY:
-                        servo_smooth_to(SERVO_TILT, 115, 200);
-                        break;
-                    case FACE_SAD:
-                        servo_smooth_to(SERVO_TILT, 110, 300);
-                        break;
-                    case FACE_SURPRISED:
-                        servo_smooth_to(SERVO_TILT, 70, 200);
-                        break;
-                    case FACE_SLEEPY:
-                        servo_smooth_to(SERVO_TILT, 120, 400);
-                        break;
-                    default:
-                        servo_smooth_to(SERVO_TILT, 90, 200);
-                        servo_smooth_to(SERVO_PAN, 90, 200);
-                        break;
-                }
+                /* 短按: 表情页 ↔ 数据页 切换(表情切换改由网页/AI 驱动) */
+                datapage_toggle();
             } else {
                 /* 长按: 切换到下一个灯效 (长臂台灯舵机已拆除) */
                 light_next_effect();
@@ -557,12 +618,72 @@ static uint8_t s_flip = 0;
 static esp_err_t http_root(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
+    /* ★ 页面是编进固件的, 固件一升级页面就变 —— 必须禁缓存,
+       否则浏览器拿着旧 HTML, 新功能(比如音色卡片)"明明烧了却看不到" */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     const char *page = s_provisioning ? PROV_PAGE : WEB_PAGE;
     httpd_resp_send(req, page, strlen(page));
     return ESP_OK;
 }
 
 /* /prov 强制显示配网页(想重新配网时用它) */
+/* /scan —— 扫描周围 Wi-Fi, 给配网页列出来让用户点选(不用手打 SSID)
+ *
+ * 同步阻塞扫描(约 1~3 秒): 只在配网页面用, 不影响正常使用。
+ * 返回 {"code":200,"list":[{"ssid":"xxx","rssi":-45}, ...]}, 按信号强度排序、
+ * 去掉重名和隐藏网络。 */
+static esp_err_t http_scan(httpd_req_t *req)
+{
+    static char js[2560];
+    wifi_scan_config_t sc = {0};
+    /* 有时第一次扫描会失败(STA 刚起来/信道切换中), 重试一次更稳 */
+    esp_err_t se = esp_wifi_scan_start(&sc, true);
+    if (se != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        se = esp_wifi_scan_start(&sc, true);
+    }
+    if (se != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi 扫描失败: %s", esp_err_to_name(se));
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"code\":500,\"list\":[]}", HTTPD_RESP_USE_STRLEN);
+    }
+    uint16_t n = 20;
+    wifi_ap_record_t *recs = heap_caps_malloc(sizeof(wifi_ap_record_t) * n, MALLOC_CAP_SPIRAM);
+    if (!recs) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, "{\"code\":500,\"list\":[]}", HTTPD_RESP_USE_STRLEN);
+    }
+    if (esp_wifi_scan_get_ap_records(&n, recs) != ESP_OK) n = 0;
+
+    /* 简单排序: 信号强的在前 */
+    for (int i = 0; i < (int)n; i++)
+        for (int j = i + 1; j < (int)n; j++)
+            if (recs[j].rssi > recs[i].rssi) {
+                wifi_ap_record_t t = recs[i]; recs[i] = recs[j]; recs[j] = t;
+            }
+
+    size_t o = snprintf(js, sizeof(js), "{\"code\":200,\"list\":[");
+    bool first = true;
+    for (int i = 0; i < (int)n && o + 120 < sizeof(js); i++) {
+        const char *ssid = (const char *)recs[i].ssid;
+        if (!ssid[0]) continue;                       /* 隐藏网络 */
+        char safe[70]; size_t k = 0;                  /* SSID 里的引号/反斜杠要转义 */
+        for (const char *p = ssid; *p && k + 2 < sizeof(safe); p++) {
+            if (*p == '"' || *p == '\\') safe[k++] = '\\';
+            if ((unsigned char)*p < 0x20) continue;
+            safe[k++] = *p;
+        }
+        safe[k] = 0;
+        o += snprintf(js + o, sizeof(js) - o, "%s{\"ssid\":\"%s\",\"rssi\":%d}",
+                      first ? "" : ",", safe, recs[i].rssi);
+        first = false;
+    }
+    free(recs);
+    snprintf(js + o, sizeof(js) - o, "]}");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+}
+
 static esp_err_t http_prov(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html; charset=utf-8");
@@ -627,7 +748,11 @@ static esp_err_t http_status(httpd_req_t *req)
     }
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_send(req, buf, len);
+    /* ★ 必须用 STRLEN 而不是 snprintf 的返回值: snprintf 返回的是"本该写入的
+       长度", 一旦字段过长被截断, len 会 > sizeof(buf), 按 len 发送会越界读到
+       buf 之后的内存(实测过这类越界发送)。 */
+    (void)len;
+    httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
 }
 
@@ -767,7 +892,9 @@ static esp_err_t http_vol(httpd_req_t *req)
 static void http_url_decode(char *s);
 
 /* ============ 灯光控制 (网页与 AI 同一套能力) ============
-   /light?effect=0..5      切换灯效 (0关灯 1单色 2呼吸 3渐变 4彩虹 5警车)
+   /light?effect=0..14     切换灯效 (0关灯 1单色 2呼吸 3彩虹环 4彩虹呼吸 5追光
+ /                        6双点对撞 7镜像呼吸 8脉冲扩散 9火焰 10星空 11电平环
+ /                        12音乐律动 13音乐频谱 14警车爆闪)
    /light?next=1           下一个灯效
    /light?br=0..100        亮度
    /light?r=255&g=0&b=0    主色(会自动切到单色常亮)                        */
@@ -805,6 +932,92 @@ static esp_err_t http_light(httpd_req_t *req)
  *
  * 注意 args 里的 JSON 必须做 URL 编码(否则 & 会被当成参数分隔符),
  * 网页端用 encodeURIComponent 处理。                                      */
+/* /neprobe?q=晴天  临时: 触发一次"直连网易云"可行性探针 */
+static esp_err_t http_neprobe(httpd_req_t *req)
+{
+    static char q[160], kw[64];
+    snprintf(kw, sizeof(kw), "晴天");
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
+        httpd_query_key_value(q, "q", kw, sizeof(kw));
+    http_url_decode(kw);
+    ESP_LOGI(TAG, "探针: 直连网易云搜索「%s」", kw);
+    ne_probe_start(kw);
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+/* /nlogin  —— 网易云扫码登录: 触发一次后台轮询, 并立刻返回当前状态(不阻塞 httpd)
+ *   GET  /nlogin            → 触发轮询 + 返回状态
+ *   GET  /nlogin?reset=1    → 重取二维码(过期后点"刷新")
+ *   GET  /nlogin?logout=1   → 退出登录
+ *   POST /nlogin  body:cookie=<urlencoded>  → 兜底: 手动粘贴 Cookie 登录
+ * 都用 POST 收 Cookie 是因为 httpd 的 URI 长度上限只有 512 字节, 放不下整条 Cookie。 */
+static esp_err_t http_nlogin(httpd_req_t *req)
+{
+    static char q[200], tmp[24], out[360];
+    bool logout = false, reset = false;
+
+    if (req->method == HTTP_POST) {
+        /* ★ 整条 Cookie 很长(网易云的 MUSIC_U 一条就 1030 字符, URL 编码后整条
+           常超 2500 字节), 所以: 缓冲 6KB + 【循环】收完整个 body。
+           以前只收 1023 字节, 超长的 Cookie 会被截断, 登录自然不成。 */
+        int total = req->content_len;
+        bool ok = false;
+        if (total > 0 && total < 6000) {
+            char *body = heap_caps_malloc(6144, MALLOC_CAP_SPIRAM);
+            if (body) {
+                int got = 0;
+                while (got < total) {
+                    int n = httpd_req_recv(req, body + got, total - got);
+                    if (n <= 0) break;
+                    got += n;
+                }
+                if (got == total) {
+                    body[got] = 0;
+                    char *p = strstr(body, "cookie=");
+                    if (p) {
+                        p += 7;
+                        http_url_decode(p);
+                        ok = ne_login_set_cookie(p);
+                    }
+                }
+                free(body);
+            }
+        } else if (total > 0) {
+            char junk[256];
+            while (httpd_req_recv(req, junk, sizeof(junk)) > 0) { }   /* 读完丢弃 */
+            ESP_LOGW(TAG, "粘贴的 Cookie 太长(%d 字节), 最多 6000", total);
+        }
+        ESP_LOGW(TAG, "粘贴 Cookie: %s", ok ? "成功" : "失败/无效");
+        ne_login_state_json(out, sizeof(out));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+        if (httpd_query_key_value(q, "logout", tmp, sizeof(tmp)) == ESP_OK) logout = true;
+        if (httpd_query_key_value(q, "new",    tmp, sizeof(tmp)) == ESP_OK) reset = true;
+    }
+    if (logout || reset)
+        ESP_LOGW(TAG, "nlogin 被调用: logout=%d new=%d  (排查谁在反复清二维码)",
+                 (int)logout, (int)reset);
+
+    if (logout) {
+        ne_login_logout();
+        ne_login_reset();
+    } else if (reset) {
+        ne_login_request_key();      /* 只打标记, 由常驻任务去取二维码 */
+    }
+    /* ★ 纯查询: 这里【绝不打网络】, 只回缓存的登录态。
+       旧代码在这里同步触发一次网易云 HTTPS —— 网页每 2 秒轮询一次, 开两个
+       标签页就是每秒一次 TLS 握手, 直接打干 socket 池, 导致 httpd 无法 accept
+       (errno 23), 表现就是"网页打不开"。现在网络请求全在设备侧的常驻任务里,
+       3 秒一次且播歌时暂停 —— 开再多标签页都不影响设备。 */
+    ne_login_state_json(out, sizeof(out));
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
 static esp_err_t http_mcp(httpd_req_t *req)
 {
     static char q[512], name[96], args[256], payload[512];
@@ -900,6 +1113,15 @@ static esp_err_t http_music(httpd_req_t *req)
         httpd_resp_send(req, ok ? "OK" : "busy", HTTPD_RESP_USE_STRLEN);
         return ESP_OK;
     }
+    /* ★ 按歌手名搜歌: 搜到歌手 → 热门歌曲 30 首装进列表(不自动播, 点选播放) */
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
+        httpd_query_key_value(q, "artist", v, sizeof(v)) == ESP_OK) {
+        http_url_decode(v);
+        bool ok = music_search_artist_only(v);
+        ESP_LOGI(TAG, "HTTP 请求搜歌手: %s", v);
+        httpd_resp_send(req, ok ? "OK" : "busy", HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
     /* ★ 导出当前曲目列表(搜索结果 或 已加载的歌单)给网页。
        静态缓冲: 30 首 × ~180 字节 ≈ 5.4KB, 放栈上会撑爆 httpd 的 4KB 栈。 */
     if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK &&
@@ -975,7 +1197,43 @@ static esp_err_t http_music(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* /ttstest?sec=2  下行音频链路自检: 走真实解码/播放通路放一段 440Hz 提示音 */
+/* /datapage?style=0..4  数据页样式推送(网页"数据页样式"卡片), 存 NVS 掉电不丢 */
+static esp_err_t http_datapage(httpd_req_t *req)
+{
+    char q[32];
+    char v[8] = "";
+    if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK)
+        httpd_query_key_value(q, "style", v, sizeof(v));
+    if (v[0]) {
+        datapage_set_style(atoi(v));
+        char out[64];
+        snprintf(out, sizeof(out), "{\"style\":%d,\"name\":\"%s\"}",
+                 datapage_get_style(), datapage_style_name(datapage_get_style()));
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_send(req, out, HTTPD_RESP_USE_STRLEN);
+        return ESP_OK;
+    }
+    httpd_resp_send(req, "OK", 2);
+    return ESP_OK;
+}
+
+/* /ttstest?sec=2  下行音频链路自检: 走真实解码/播放通路放一段 440Hz 提示音
+ *
+ * ★★ 实测崩溃修复 ★★ 这里以前【同步】调用 ai_client_selftest_tts(), 里面的
+ *    opus_encode 需要几十 KB 栈, 而 httpd 任务栈只有几 KB —— 必然栈溢出,
+ *    溢出会砸坏 FreeRTOS 内核数据, 表现为各种随机的 LoadProhibited /
+ *    StoreProhibited(现场 A2/A3 = 0xa5a5a5a5, 即已释放堆的填充值)。
+ *    现在丢给一个一次性大栈任务去做(栈放 PSRAM, 96KB 不心疼), httpd 立刻返回。 */
+static volatile bool s_tts_test_busy;
+
+static void tts_test_task(void *arg)
+{
+    int sec = (int)(intptr_t)arg;
+    ai_client_selftest_tts(sec);
+    s_tts_test_busy = false;
+    vTaskDelete(NULL);
+}
+
 static esp_err_t http_ttstest(httpd_req_t *req)
 {
     char q[32];
@@ -985,7 +1243,20 @@ static esp_err_t http_ttstest(httpd_req_t *req)
     int sec = atoi(v);
     if (sec < 1) sec = 1;
     if (sec > 10) sec = 10;
-    ai_client_selftest_tts(sec);
+
+    if (s_tts_test_busy) {              /* 防重入: 连点不会叠一堆编码任务 */
+        httpd_resp_send(req, "busy", 4);
+        return ESP_OK;
+    }
+    s_tts_test_busy = true;
+    if (xTaskCreatePinnedToCoreWithCaps(tts_test_task, "ttstest", 96 * 1024,
+                                        (void *)(intptr_t)sec, 5, NULL, 1,
+                                        MALLOC_CAP_SPIRAM) != pdPASS) {
+        s_tts_test_busy = false;
+        ESP_LOGE(TAG, "测试音任务创建失败(PSRAM 不足)");
+        httpd_resp_send(req, "ERR", 3);
+        return ESP_OK;
+    }
     httpd_resp_send(req, "OK", 2);
     return ESP_OK;
 }
@@ -1030,9 +1301,13 @@ static void wifi_fill_sta_cfg(wifi_config_t *sta)
     if (cfg_get_str("ssid", ssid, sizeof(ssid)) == 0) {
         strncpy(ssid, WIFI_SSID, sizeof(ssid) - 1);
         strncpy(pass, WIFI_PASSWORD, sizeof(pass) - 1);
-        ESP_LOGW(TAG, "WiFi 未配置, 用 config.h 占位值 (去 http://192.168.4.1 配)");
+        /* ★ 没配过网: 只开热点, 【不要】拿占位 SSID 去连。
+           否则 STA 会一直重连不存在的路由, 把配网页的 WiFi 扫描顶掉。 */
+        s_wifi_cfg_ok = false;
+        ESP_LOGW(TAG, "WiFi 未配置 → 只开热点配网 (去 http://192.168.4.1 配)");
     } else {
         cfg_get_str("pass", pass, sizeof(pass));
+        s_wifi_cfg_ok = true;
     }
     memset(sta, 0, sizeof(*sta));
     strncpy((char *)sta->sta.ssid, ssid, sizeof(sta->sta.ssid) - 1);
@@ -1057,12 +1332,14 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     if (id == WIFI_EVENT_AP_STACONNECTED) {
         ESP_LOGI(TAG, "web client connected");
     } else if (id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        /* 配网模式(还没填过 WiFi)就什么都不连 —— 只是为了让 STA 接口存在,
+           这样配网页的 esp_wifi_scan_start() 才能工作("扫不到周围网络"的真因) */
+        if (s_wifi_cfg_ok) esp_wifi_connect();
     } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
         s_sta_connected = false;
         strcpy(s_sta_ip, "-");
         ai_client_notify_online(false);
-        esp_wifi_connect();
+        if (s_wifi_cfg_ok) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = (ip_event_got_ip_t *)data;
         s_sta_connected = true;
@@ -1074,8 +1351,20 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
         s_wifi_fail_ms = 0;
         if (s_provisioning) {
             s_provisioned = true;
-            wifi_screen_ok(s_sta_ip);
-            s_prov_ok_ms = esp_timer_get_time() / 1000;
+            /* ★ 只有【从配网流程里连上】才提示: 正常开机 30 秒内联网要静默,
+               不报"配网成功"、也不显示。用户要的是"没网才打扰我"。 */
+            if (s_provisioning) {
+                wifi_screen_ok(s_sta_ip);
+                s_prov_ok_ms = esp_timer_get_time() / 1000;
+                /* 注意: 【不要】在这里清 s_prov_announced —— 此刻 s_provisioning
+                   还是 true, 主循环那一拍会立刻再播一次配网提示(实测连上后又响了一遍)。
+                   标记改在"真正退出配网"时清(见主循环)。 */
+                if (xTaskCreatePinnedToCoreWithCaps(prov_ok_chime_task, "provok", 6144, NULL, 5, NULL, 1,
+                                                    MALLOC_CAP_SPIRAM) != pdPASS) { /* 忽略 */ }
+            }
+            /* ★ 以前这里还有一个【无条件】的创建 —— 正常开机联网也会响"连接成功"
+               两声(违背上面"正常开机要静默"的设计), 配网时更是响四声(重复创建)。
+               已删, 提示音只在配网流程里播。 */
         }
     }
 }
@@ -1196,9 +1485,21 @@ static void start_wifi(bool provisioned)
         esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
         esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
     } else {
-        /* 配网模式: 只开热点, 不连路由 */
-        esp_wifi_set_mode(WIFI_MODE_AP);
+        /* ★★ 配网模式必须用 APSTA(而不是纯 AP) ★★
+         *
+         * 纯 AP 模式下 STA 接口没有启动, 配网页调用 esp_wifi_scan_start()
+         * 会直接失败 → 手机配网页里【永远扫不到周围的 WiFi】(实测踩到:
+         * "就是现在扫不到我身边的网络")。
+         * 这里改成 APSTA: STA 接口起来了(能扫描), 但上面的事件处理里
+         * 已经改成"没配过网就不去连", 所以不会去连占位 SSID。 */
+        esp_wifi_set_mode(WIFI_MODE_APSTA);
         esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+        esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    }
+    /* 国家码: 不设的话部分信道不扫(默认是"世界安全"模式), 设成 CN 更全 */
+    {
+        wifi_country_t cn = { .cc = "CN", .schan = 1, .nchan = 13, .policy = WIFI_COUNTRY_POLICY_MANUAL };
+        esp_wifi_set_country(&cn);
     }
     /* ★★★ 强制门户: 让手机连上热点后【自动弹出】控制页 ★★★
      *
@@ -1346,10 +1647,31 @@ static void start_http_server(void)
      * "302 跳到控制页" 那一半从来没生效过(手机因此不会弹页)。
      * (见 esp_http_server/src/httpd_uri.c 的 httpd_find_uri_handler) */
     cfg.uri_match_fn = httpd_uri_match_wildcard;
+
+    /* ★★ 防止"网页打不开"的兜底(实测踩过一次) ★★
+     *
+     * 症状: 手机/电脑打开控制页一直转圈, 设备日志刷
+     *     E httpd: httpd_accept_conn: error in accept (23)   ← errno 23 = 没有空闲 socket
+     * 原因: LWIP 的 socket 总数(默认 10)被占满 —— httpd 的 accept() 直接失败,
+     *       而这些连接又被浏览器 keep-alive 长期占着, 谁也不肯先松手 → 死锁。
+     *       (那次是被"网页每 2 秒轮询 /nlogin 又顺带打网易云 HTTPS"打爆的,
+     *        轮询已改成设备侧低频任务; 这里再加一层结构性保护。)
+     *
+     * lru_purge_enable: socket 用尽时【踢掉最久没动静的那条连接】来给新连接让位。
+     * 默认是 false(直接 accept 失败)。开了之后最多让一个闲置的旧连接断开,
+     * 浏览器会自动重连 —— 用户侧体感就是"有点慢", 而不是"打不开"。
+     */
+    cfg.lru_purge_enable    = true;
+    cfg.max_open_sockets    = 7;      /* 留 3 个给音乐流 / WebSocket */
+    cfg.recv_wait_timeout   = 10;
+    cfg.send_wait_timeout   = 10;
+
     if (httpd_start(&s_httpd, &cfg) == ESP_OK) {
         httpd_uri_t r_root  = {.uri = "/",        .method = HTTP_GET, .handler = http_root};
         httpd_uri_t r_prov  = {.uri = "/prov",    .method = HTTP_GET, .handler = http_prov};
         httpd_uri_t r_stat  = {.uri = "/status",  .method = HTTP_GET, .handler = http_status};
+        /* 配网页用: 扫描周围 Wi-Fi 给用户点选 */
+        httpd_uri_t r_scan  = {.uri = "/scan",    .method = HTTP_GET, .handler = http_scan};
         httpd_uri_t r_emo   = {.uri = "/emotion", .method = HTTP_GET, .handler = http_emotion};
         httpd_uri_t r_servo = {.uri = "/servo",   .method = HTTP_GET, .handler = http_servo};
         httpd_uri_t r_auto  = {.uri = "/auto",    .method = HTTP_GET, .handler = http_auto};
@@ -1364,9 +1686,14 @@ static void start_http_server(void)
         httpd_uri_t r_wb    = {.uri = "/wakebeep",.method = HTTP_GET, .handler = http_wakebeep};
         httpd_uri_t r_wifi  = {.uri = "/wifi",    .method = HTTP_GET, .handler = http_wifi};
         httpd_uri_t r_light = {.uri = "/light",   .method = HTTP_GET, .handler = http_light};
+    httpd_uri_t r_dpage = {.uri = "/datapage", .method = HTTP_GET, .handler = http_datapage};
         httpd_uri_t r_mcp   = {.uri = "/mcp",     .method = HTTP_GET, .handler = http_mcp};
+        httpd_uri_t r_nepr  = {.uri = "/neprobe", .method = HTTP_GET, .handler = http_neprobe};
+        httpd_uri_t r_nlog  = {.uri = "/nlogin",  .method = HTTP_GET, .handler = http_nlogin};
+        httpd_uri_t r_nlogp = {.uri = "/nlogin",  .method = HTTP_POST, .handler = http_nlogin};
         httpd_register_uri_handler(s_httpd, &r_root);
         httpd_register_uri_handler(s_httpd, &r_prov);
+        httpd_register_uri_handler(s_httpd, &r_scan);
         httpd_register_uri_handler(s_httpd, &r_stat);
         httpd_register_uri_handler(s_httpd, &r_emo);
         httpd_register_uri_handler(s_httpd, &r_servo);
@@ -1382,7 +1709,11 @@ static void start_http_server(void)
         httpd_register_uri_handler(s_httpd, &r_wb);
         httpd_register_uri_handler(s_httpd, &r_wifi);
         httpd_register_uri_handler(s_httpd, &r_light);
+        httpd_register_uri_handler(s_httpd, &r_dpage);
         httpd_register_uri_handler(s_httpd, &r_mcp);
+        httpd_register_uri_handler(s_httpd, &r_nepr);
+        httpd_register_uri_handler(s_httpd, &r_nlog);
+        httpd_register_uri_handler(s_httpd, &r_nlogp);
         /* ★ 兜底必须【最后】注册。
            匹配是按注册顺序找第一个命中的, 而星号兜底会命中任何路径 ——
            注册早了就把上面所有具体路径全抢掉。 */
@@ -1494,10 +1825,34 @@ static void ai_task(void *arg)
 #endif /* 旧 HTTP 版 AI 代码 */
 
 /* ========== 主入口 ========== */
+/* ================= cJSON 的分配器改到 PSRAM =================
+ *
+ * 为什么必须改: sdkconfig 里 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384 意味着
+ * 【小于 16KB 的 malloc 一律走内部 RAM】。而 cJSON 每解析一个节点就 malloc 一次
+ * (约 64 字节) —— 解析网易云的"我的歌单"(15KB, 500+ 个节点)要 30KB+ 内部 RAM,
+ * 内部 RAM 本来只剩十几 KB, 于是 cJSON_Parse 直接返回 NULL:
+ *     接口 HTTP 200 拿到了 15535 字节, 我们却"拉到 0 个歌单"。
+ * 把 cJSON 的分配器指到 PSRAM(几 MB)后, 多大的 JSON 都解析得动。
+ *
+ * 安全性: IDF 里 heap_caps_malloc 与 free() 是同一套堆管理器(按指针查堆),
+ * 所以别处已有的 free(cJSON_PrintUnformatted 的结果) 不会出错。 */
+static void *cjson_psram_malloc(size_t sz)
+{
+    return heap_caps_malloc(sz, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
+static void cjson_psram_free(void *p)
+{
+    heap_caps_free(p);
+}
+
 void app_main(void)
 {
     ESP_LOGI(TAG, "=== Robot Companion v1.0 ===");
-    ESP_LOGI(TAG, "ESP32-S3 N16R8 + SSD1305 + 3xSG90 + WS2812 + Sensors + I2S Audio + AI");
+    ESP_LOGI(TAG, "ESP32-S3 N16R8 + SSD1305 + 3xSG90 + WS2812 + I2S Audio + AI");
+
+    /* cJSON 的节点/字符串一律从 PSRAM 分配(见上面的说明) */
+    cJSON_Hooks cj_hooks = { cjson_psram_malloc, cjson_psram_free };
+    cJSON_InitHooks(&cj_hooks);
 
     memset(&s_state, 0, sizeof(s_state));
     s_state.pan_target = 90;
@@ -1528,6 +1883,7 @@ void app_main(void)
 
     /* --- 初始化表情系统 / 或进入配网模式 --- */
     face_init();
+    datapage_init();   /* SNTP 对时 + 数据页样式(NVS) */
     if (s_provisioning) {
         /* 屏幕让给配网页, 不自动播表情 */
         face_set_auto_cycle(false);
@@ -1610,6 +1966,7 @@ void app_main(void)
     light_init();
     music_init();   /* 网易云在线音乐(走自建代理) */
     persona_init(); /* 人格引擎: 心情/精力/无聊/亲密 → 自主转头 + 心情灯 */
+    ne_client_init(); /* 网易云直连客户端: 从 NVS 读回登录态(Cookie) */
     xTaskCreatePinnedToCore(sensor_task, "sensor", 3072, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(env_task, "env", 3072, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(boot_button_task, "boot", 2048, NULL, 5, NULL, 0);
@@ -1619,3 +1976,7 @@ void app_main(void)
     ESP_LOGI(TAG, "触摸头部=害羞, 手靠近=连续跟手追踪");
     ESP_LOGI(TAG, "AI 对话: 直接说「你好小智」, 不用按键");
 }
+
+
+
+

@@ -84,5 +84,13 @@ void ai_client_set_wake_beep(bool on);
 /* 最近一帧麦克风能量(均方根), 用来标定触发灵敏度 */
 float ai_client_mic_rms(void);
 
+/* ★ 播报音色(设备端 DSP 变声): xiaozhi.me 的音色在服务端配, 协议里没有切换
+ * 消息, 所以设备端自己做 —— 对播报 PCM 实时做 变调/环调(金属)/AM(电流)/
+ * 带通(对讲机)/回声(深空)/软削波。voice: original/metal/deep/alien/elec/
+ * strong/radio/space/elec2 或中文(原声/机械金属/电子低沉/赛博外星/电流音/
+ * 强电流/对讲机/深空回声/电流音2), 也认 0~8。立即生效 + NVS 记忆。 */
+bool        ai_client_set_tts_voice(const char *voice);
+const char *ai_client_tts_voice_cn(void);   /* 当前音色中文名 */
+
 /* 自定义服务端地址(自建 xiaozhi-server 用, 传 NULL 恢复官方) */
 void ai_client_set_server(const char *ota_url, const char *ws_url, const char *token);

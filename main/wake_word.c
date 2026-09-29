@@ -46,6 +46,8 @@ bool wake_word_init(void)
     char *name = esp_srmodel_filter(s_models, ESP_WN_PREFIX, NULL);
     if (name == NULL) {
         ESP_LOGE(TAG, "分区里有模型但没有 WakeNet(wn*) 模型");
+        esp_srmodel_deinit(s_models);      /* ★ 失败路径别漏掉释放 */
+        s_models = NULL;
         return false;
     }
 
@@ -71,6 +73,30 @@ bool wake_word_init(void)
     ESP_LOGI(TAG, "唤醒词就绪: %s  采样率=%dHz  每帧=%d 样本  字数=%d",
              s_name, s_rate, s_chunk, s_iface->get_word_num(s_data));
     return true;
+}
+
+/* ★ 重建引擎(销毁模型实例再建一个)。
+ *
+ * 为什么需要它: 放音乐时整条 AI 音频链被挂起(几十秒不喂音频), 之后再恢复时,
+ * 只调 wake_word_reset() 是【不够】的 —— 那个函数只清我们自己的累积缓冲,
+ * 而模型内部的特征队列还停在暂停前那一刻的旧音频上。恢复后喂进去的声音,
+ * 在它看来就是一次"跳变", 唤醒率会掉到几乎为 0 ——
+ * 用户的感受正是: 【放完歌/暂停之后, 怎么喊「你好小智」都没反应】。
+ * destroy + create 是官方给的正规重建路径(clean 会崩, 见 wake_word_reset 注释)。 */
+void wake_word_restart(void)
+{
+    if (!s_ready || s_iface == NULL || s_data == NULL || s_name[0] == '-') return;
+    char name[48];
+    snprintf(name, sizeof(name), "%s", s_name);
+    s_iface->destroy(s_data);
+    s_data = s_iface->create(name, DET_MODE_95);
+    s_len = 0;
+    if (s_data) {
+        ESP_LOGW(TAG, "唤醒词引擎已重建(清掉暂停期间的旧状态), 现在应该能正常喊醒");
+    } else {
+        s_ready = false;
+        ESP_LOGE(TAG, "唤醒词引擎重建失败(内存不足), 退回能量 VAD");
+    }
 }
 
 bool wake_word_ready(void)

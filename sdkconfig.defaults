@@ -1,30 +1,37 @@
-# 板级默认配置 — ESP32-S3-N16R8 (16MB flash + 8MB Octal PSRAM)
+﻿# 板级默认配置 — ESP32-S3-N16R8 (16MB flash + 8MB Octal PSRAM)
 # 注意: 这些值只有在 sdkconfig 里不存在时才会被采用,
 #       改完 sdkconfig 后本文件用于保证 fullclean 后配置不丢。
 
-# ---- Flash: 16MB ----
+# ---- Flash: 16MB, QIO @80MHz(指令取指带宽比 DIO 翻倍) ----
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 
-# ---- PSRAM: 8MB Octal @80MHz ----
+# ---- PSRAM: 8MB Octal @120MHz(八线最高档, 带宽比 80M 高 50%) ----
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_TYPE_AUTO=y
-CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_SPEED_120M=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+# 4096 以上的 malloc 一律走 PSRAM(8MB), 内部 RAM 只留给任务栈/DMA 这些必须内部的。
+# 实机踩坑: 以前是 16384, WS 客户端 8KB 收发缓冲、mbedTLS I/O 缓冲全挤在内部 RAM,
+# 结果拉歌单(TLS 握手)的同时 WS 任务(栈 5120)建不出来 → "Error create websocket task",
+# 设备能听到「你好小智」却 7 分钟连不上 AI。
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# ---- CPU 240MHz 双核(music 解码 + esp-sr 唤醒词都需要) ----
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# ---- 编译器: -O2 性能优化(不是 -Og 调试级) ----
+# Opus 解码/AES 加密/9 音色 DSP/唤醒词全部提速; 断言关闭省掉热路径的判断
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
 
 # ---- 自定义分区表: app 4MB ----
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
-
-# ---- CPU 保持 160MHz ----
-# 瓶颈在 I2C(400kHz) 和刷新率, 不在 CPU; 160MHz 更省电(电池供电)。
-# 想榨性能就同时把下面两个都改成 240:
-#   CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-#   CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
 
 # ---- esp-sr 唤醒词「你好小智」(WakeNet9) ----
 # 与官方 78/xiaozhi-esp32 的 sdkconfig.defaults.esp32s3 完全一致。
@@ -33,5 +40,24 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS=y
 
-# ---- CPU 240MHz (music decode needs it) ----
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+# ---- LWIP socket 总数 16(默认 10 太紧) ----
+# 音乐流 + WebSocket + httpd 一起用, 曾导致 httpd accept 失败(errno 23),
+# 表现就是网页打不开。
+CONFIG_LWIP_MAX_SOCKETS=16
+
+# ---- mbedTLS: 全部走软件 AES + 缓冲放 PSRAM ----
+# 实机踩坑: 硬件 AES 走 DMA, 每次加密都要 heap_caps_aligned_alloc(DMA 内存),
+# 内部 RAM 紧张时反复失败 → 网易云 HTTPS 请求随机失败(HTTP -1),
+# 表现就是"扫了码没反应/时好时坏"。CPU 240MHz 时硬件 AES 没有速度优势,
+# 关掉是纯赚。TLS 输入缓冲 16KB(>ALWAYSINTERNAL 阈值, 自动落 PSRAM)。
+CONFIG_MBEDTLS_HARDWARE_AES=n
+CONFIG_MBEDTLS_AES_USE_INTERRUPT=n
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
+
+# ---- TCP 接收窗口 5.6KB → 32KB ----
+# 实机踩坑: 默认窗口太小, 一个 RTT 只能收 5.6KB, 下载速率被压在十几 KB/s ——
+# 拉一次歌单(260KB)要 20 秒。放大后几秒就完。
+# 内存安全: TRY_ALLOCATE_WIFI_LWIP 已开, 这些缓冲走 PSRAM, 按需分配。
+CONFIG_LWIP_TCP_WND_DEFAULT=32768
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=16384
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=16

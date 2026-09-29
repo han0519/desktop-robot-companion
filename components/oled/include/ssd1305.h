@@ -59,6 +59,9 @@ uint8_t ssd1305_get_pixel(int x, int y);
 uint8_t *ssd1305_get_framebuffer(void);
 
 /** @brief 将显存内容刷新到屏幕（全部 8 页） */
+/* 面板被判定为"不在"(没接屏 / 自愈也救不回来) → 调用方可直接跳过刷新,
+   避免刷屏日志和白烧 I2C。静默期结束会自动重试。 */
+bool ssd1305_absent(void);
 esp_err_t ssd1305_display(void);
 
 /**

@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>喵伴 · 8 灯珠环形灯效预览</title>
+<style>
+  :root{
+    --bg:#0b1020; --card:#141a2e; --card2:#1b2340; --line:#26304f;
+    --tx:#e8f0ff; --tx2:#93a0c4; --acc:#00d4ff; --acc2:#7c5cff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:
+        radial-gradient(900px 600px at 15% -10%, #17224a 0%, transparent 60%),
+        radial-gradient(700px 500px at 100% 0%, #241a4a 0%, transparent 55%),
+        var(--bg);
+      color:var(--tx);font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:1240px;margin:0 auto;padding:26px 20px 70px}
+  h1{margin:0 0 6px;font-size:22px;letter-spacing:.3px}
+  h1 small{font-weight:400;font-size:13px;color:var(--tx2);margin-left:10px}
+  .sub{color:var(--tx2);font-size:13px;margin-bottom:22px}
+  .sub b{color:var(--acc)}
+
+  .top{display:grid;grid-template-columns:minmax(320px,1fr) minmax(330px,420px);gap:22px;align-items:start}
+  @media (max-width:900px){.top{grid-template-columns:1fr}}
+
+  .card{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
+        border-radius:16px;padding:16px}
+  .stage{display:flex;flex-direction:column;align-items:center;gap:10px}
+  canvas#big{width:100%;max-width:520px;height:auto;aspect-ratio:1/1}
+  .now{font-size:15px}
+  .now b{color:var(--acc)}
+  .now code{background:#0d1428;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:#ffd479;font-size:12px}
+  .hint{color:var(--tx2);font-size:12px;text-align:center;max-width:520px}
+
+  .fxlist{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+  .fx{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+      border-radius:10px;background:#101733;cursor:pointer;transition:.15s;font-size:13px}
+  .fx:hover{border-color:#39507f;transform:translateY(-1px)}
+  .fx.on{border-color:var(--acc);background:#0e2233;box-shadow:0 0 0 1px #00d4ff33 inset}
+  .fx i{width:9px;height:9px;border-radius:50%;background:#2b3a63;flex:0 0 auto}
+  .fx.on i{background:var(--acc);box-shadow:0 0 8px var(--acc)}
+  .fx span.m{flex:1}
+  .fx em{font-style:normal;color:var(--tx2);font-size:11px}
+
+  .ctl{margin-top:14px}
+  .ctl label{display:flex;justify-content:space-between;font-size:12.5px;color:var(--tx2);margin:10px 0 4px}
+  .ctl label b{color:var(--acc)}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .rowc{display:flex;gap:10px;align-items:center;margin-top:10px}
+  input[type=color]{width:46px;height:30px;background:none;border:1px solid var(--line);border-radius:8px;padding:2px}
+  .btn{border:1px solid var(--line);background:#101733;color:var(--tx);border-radius:9px;
+       padding:7px 11px;cursor:pointer;font-size:12.5px}
+  .btn:hover{border-color:#39507f}
+  .btn.on{border-color:var(--acc);color:var(--acc)}
+  .sw{display:flex;align-items:center;gap:6px;color:var(--tx2);font-size:12.5px;cursor:pointer}
+
+  .secttl{margin:30px 0 12px;font-size:15px;color:var(--tx2);display:flex;align-items:center;gap:10px}
+  .secttl:after{content:"";flex:1;height:1px;background:var(--line)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(158px,1fr));gap:14px}
+  .tile{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);
+        border-radius:14px;padding:10px;text-align:center;cursor:pointer;transition:.16s}
+  .tile:hover{border-color:#39507f;transform:translateY(-2px)}
+  .tile.on{border-color:var(--acc)}
+  .tile canvas{width:100%;height:auto;aspect-ratio:1/1}
+  .tile .nm{margin-top:6px;font-size:13px}
+  .tile .id{font-size:11px;color:var(--tx2)}
+  table.params{width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px}
+  table.params td,table.params th{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+  table.params th{color:var(--tx2);font-weight:500}
+  table.params code{color:#ffd479}
+  .foot{margin-top:26px;color:var(--tx2);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>喵伴 · WS2812 灯效预览<small>8 灯珠环形排列（ESP32-S3）</small></h1>
+  <div class="sub">
+    下面是<b>准备写进设备</b>的 15 个灯效，全部按 <b>8 颗灯珠</b> 的圆环设计，刷新 <b>40Hz</b>，
+    与设备端一致的算法（HSV 换色 + 电流预算限制）。你看中哪几个、或者要调颜色/速度/节奏，告我一声，
+    确认后我照着这份 1:1 移植到 <code>light.c</code>。<br>
+    <b style="color:#00d4ff">放歌时用的那个有两种做法，都做了，你挑一个：</b>
+    「音乐律动」= 环形单条跳动（像音频条）；「音乐频谱（8 段）」= 8 颗灯各管一个频段，各自跳。
+  </div>
+
+  <div class="top">
+    <div class="card stage">
+      <canvas id="big" width="560" height="560"></canvas>
+      <div class="now">当前灯效：<b id="nm">音乐律动</b> <code id="fid">music</code></div>
+      <div class="hint">灯珠编号 <b>0 号在正上方（12 点）</b>，顺时针递增 —— 设备端也是这个顺序。
+        外圈灰点表示"未点亮的灯珠"。</div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:14px;margin-bottom:2px">灯效列表</div>
+      <div class="fxlist" id="fxlist"></div>
+
+      <div class="ctl">
+        <label>整体亮度 <b><span id="brv">70</span>%</b></label>
+        <input type="range" id="br" min="1" max="100" value="70">
+
+        <label>动画速度 <b><span id="spv">1.0</span>×</b></label>
+        <input type="range" id="sp" min="20" max="300" value="100">
+
+        <label>主色（单色 / 呼吸 / 火焰基调用）</label>
+        <div class="rowc">
+          <input type="color" id="col" value="#00d4ff">
+          <span class="sw" id="colnm" style="color:var(--tx2);font-size:12px">#00d4ff</span>
+        </div>
+
+        <label>色阶方向</label>
+        <div class="rowc">
+          <label class="sw"><input type="checkbox" id="flip"> 翻转（默认：条底青 → 顶部绿，同参考图）</label>
+        </div>
+
+        <label>音乐电平（仅"音乐律动/电平环"用） <b><span id="lvv">自动</span></b></label>
+        <input type="range" id="lv" min="0" max="100" value="0">
+        <div class="rowc">
+          <label class="sw"><input type="checkbox" id="autolv" checked> 自动节拍（120 BPM 鼓点，跟放歌时一样快攻慢放）</label>
+        </div>
+        <div class="rowc" style="justify-content:space-between">
+          <span class="sw" style="font-size:12px">总亮度占用量（模拟设备电流预算）</span>
+          <span id="bud" style="color:var(--acc);font-size:12px">0%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="secttl">全部效果一览（点击任意一块放大预览）</div>
+  <div class="grid" id="grid"></div>
+
+  <div class="secttl">参数表（移植到设备用）</div>
+  <div class="card">
+    <table class="params">
+      <thead><tr><th style="width:110px">ID</th><th style="width:130px">中文名</th><th>关键参数 / 算法</th></tr></thead>
+      <tbody id="ptable"></tbody>
+    </table>
+    <div class="foot">
+      说明：设备端 8 灯珠、刷新 40Hz，单帧电流有预算上限（超了会等比压暗，避免 USB 供电吃不消 ——
+      预览右下角的"总亮度占用量"就是在模拟这个）。所有特效都只用 HSV 换色 + 三角函数 + 单调计数，
+      在 ESP32 上每帧 8 颗灯的开销可以忽略。
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* =========================================================================
+   8 灯珠环形灯效 —— 与设备端 light.c 一一对应
+   固定 40Hz 步进（不是浏览器帧率），这样预览的离散感跟设备一致
+   ========================================================================= */
+const N    = 8;                       // 灯珠数
+const STEP = 1/40;                    // 40Hz
+const PI2  = Math.PI*2;
+
+/* ---------- 与设备端同款 HSV→RGB（h: 0~360, s/v: 0~1） ---------- */
+function hsv(h, s, v){
+  h = ((h % 360) + 360) % 360;
+  const c = v*s, x = c*(1-Math.abs((h/60)%2-1)), m = v-c;
+  let r=0,g=0,b=0;
+  if      (h <  60){ r=c; g=x; }
+  else if (h < 120){ r=x; g=c; }
+  else if (h < 180){ g=c; b=x; }
+  else if (h < 240){ g=x; b=c; }
+  else if (h < 300){ r=x; b=c; }
+  else             { r=c; b=x; }
+  return [r+m, g+m, b+m];
+}
+const clamp01 = v => v<0?0:(v>1?1:v);
+
+/* ---------- 全局参数（对应设备端的 brightness / 主色 / speed） ---------- */
+const P = { brightness:0.70, speed:1.0, hue:187, musicAuto:true, musicManual:0, flip:false };
+
+/* ---------- 音乐电平：模拟放歌时的输入 ----------
+   设备端是音乐解码循环每帧喂 light_music_level(0..1)，这里用 120BPM 鼓点模拟，
+   同样是"快攻 0.55 / 慢放 0.10"的包络，所以看起来的弹跳感与实机一致。 */
+let env = 0.015;
+function simLevel(t){
+  const beat = t/0.5, ph = beat - Math.floor(beat);
+  let lv = Math.exp(-ph*7)*0.95;                    // 底鼓
+  lv += Math.exp(-((beat*2)%1)*18)*0.12;            // 8 分音符
+  lv += (Math.sin(t*7.3)*0.5+0.5)*0.06;             // 细节噪声
+  return clamp01(lv);
+}
+function stepMusicLevel(t){
+  const lv = P.musicAuto ? simLevel(t) : P.musicManual;
+  env += (lv - env) * (lv > env ? 0.55 : 0.10);     // 快攻慢放
+  if (env < 0.015) env = 0.015;
+  return env;
+}
+
+/* ---------- 8 段频谱：模拟真实音乐各频段的能量 ----------
+   低频起伏大、衰减慢；高频抖得快、幅度小 —— 跟真实频谱看起来一样。
+   设备端会用"低/中/高 3 个一阶滤波器 + 插值成 8 段"来近似（很便宜，不用 FFT）。 */
+const bEnv = new Array(N).fill(0);
+function simBands(t){
+  const beat = t/0.5, ph = beat - Math.floor(beat);
+  const out = [];
+  for (let i=0;i<N;i++){
+    const k = i/(N-1);                                  // 0=低频 ... 1=高频
+    const kick = Math.exp(-ph*(5 - 2.2*k)) * (1 - 0.62*k);   // 鼓点主要砸低频
+    const hat  = Math.exp(-((beat*2)%1)*(8 + 14*k)) * (0.25 + 0.5*k);
+    const tone = (Math.sin(t*(2.1 + k*9.7)) * 0.5 + 0.5) * (0.18 + 0.30*k);
+    out.push(clamp01(kick + hat + tone));
+  }
+  return out;
+}
+function stepBands(t){
+  const src = P.musicAuto ? simBands(t) : new Array(N).fill(P.musicManual);
+  for (let i=0;i<N;i++) bEnv[i] += (src[i] - bEnv[i]) * (src[i] > bEnv[i] ? 0.60 : 0.09);
+  return bEnv;
+}
+
+/* ---------- 每帧状态（随机类特效需要跨帧记忆） ---------- */
+const st = { fire:new Array(N).fill(0), star:new Array(N).fill(0),
+             starT:new Array(N).fill(0), rise:new Array(N).fill(0), peak:0 };
+function reseed(){ st.fire.fill(0); st.star.fill(0); st.starT.fill(0); st.rise.fill(0); st.peak=0; env=0.015; }
+
+/* 音频条形图那种"按高度取色"的色阶 —— 颜色【固定绑在位置】上, 不随音量变,
+   音量只决定条有多长(和参考的"音乐节奏氛围灯"完全一致)。
+   ★ 默认按参考图：从条底往上 青 → 蓝 → 紫 → 粉 → 红 → 橙 → 黄 → 绿(顶部)，
+     也就是说"新增的那一截"是青蓝色，越往上越暖、最顶是绿。
+     想换成常见的那种(底绿、顶紫青)就把 P.flip 打开，勾一下开关即可。 */
+const BAR_STOPS = [
+  [0.00, [0.18, 0.86, 1.00]],   // 条底 青
+  [0.14, [0.28, 0.52, 1.00]],   // 蓝
+  [0.28, [0.62, 0.30, 1.00]],   // 紫
+  [0.42, [1.00, 0.25, 0.62]],   // 粉
+  [0.56, [1.00, 0.30, 0.20]],   // 红
+  [0.70, [1.00, 0.58, 0.00]],   // 橙
+  [0.84, [1.00, 0.88, 0.00]],   // 黄
+  [1.00, [0.10, 0.92, 0.40]],   // 顶部 绿
+];
+const PEAK_COLOR = [0.55, 0.95, 1.00];   // 峰值点: 亮青(接近白), 参考图里悬空的小色块
+function barColor(p){
+  p = clamp01(P.flip ? 1-p : p);
+  for (let i=0;i<BAR_STOPS.length-1;i++){
+    const [a,ca] = BAR_STOPS[i], [b,cb] = BAR_STOPS[i+1];
+    if (p <= b || i === BAR_STOPS.length-2){
+      const k = b>a ? (p-a)/(b-a) : 0;
+      return [ ca[0]+(cb[0]-ca[0])*k, ca[1]+(cb[1]-ca[1])*k, ca[2]+(cb[2]-ca[2])*k ];
+    }
+  }
+  return BAR_STOPS[BAR_STOPS.length-1][1];
+}
+
+/* =========================================================================
+   灯效定义：render(t, lv) → 返回 8 个 [r,g,b]（0~1，已含亮度）
+   ========================================================================= */
+const FX = [
+  {
+    id:'off', cn:'关闭', key:'全灭',
+    desc:'全灭。省电、夜里不晃眼。',
+    param:'8 灯全 0',
+    render:()=> new Array(N).fill([0,0,0])
+  },
+  {
+    id:'mono', cn:'单色常亮', key:'匀速',
+    desc:'主色常亮，最基础的状态指示。',
+    param:'8 灯 = 主色 × 亮度',
+    render:()=>{
+      const c = hsv(P.hue,1,P.brightness);
+      return new Array(N).fill(c);
+    }
+  },
+  {
+    id:'breathe', cn:'呼吸', key:'2.4s 周期',
+    desc:'单色缓慢吸气呼气，最暗不低于 12%，免得看起来像关机了。',
+    param:'k = 0.12 + 0.88·(0.5+0.5·sin(2πt/2.4))',
+    render:(t)=>{
+      const k = 0.12 + 0.88*(0.5+0.5*Math.sin(PI2*t/2.4));
+      return new Array(N).fill(hsv(P.hue,1,P.brightness*k));
+    }
+  },
+  {
+    id:'rainbow', cn:'彩虹环', key:'缓慢旋转',
+    desc:'8 颗灯均分 360° 色相，整环缓慢旋转。',
+    param:'hue_i = t·45° + 360°·i/8',
+    render:(t)=>{
+      const out=[]; for(let i=0;i<N;i++) out.push(hsv(t*45 + 360*i/N,1,P.brightness));
+      return out;
+    }
+  },
+  {
+    id:'rainbow_breath', cn:'彩虹呼吸', key:'3.2s 周期',
+    desc:'彩虹分布 + 整体一起呼吸，比"彩虹环"更柔和，适合待机。',
+    param:'k = 0.20 + 0.80·(0.5+0.5·sin(2πt/3.2))',
+    render:(t)=>{
+      const k = 0.20 + 0.80*(0.5+0.5*Math.sin(PI2*t/3.2));
+      const out=[]; for(let i=0;i<N;i++) out.push(hsv(t*30 + 360*i/N,1,P.brightness*k));
+      return out;
+    }
+  },
+  {
+    id:'chase', cn:'追光', key:'2.5 圈/秒',
+    desc:'一个亮点沿环跑，后面带 3 颗拖尾。开机自检、正在处理时的动感提示。',
+    param:'head = (2.5t·8) mod 8，拖尾 k = 1-0.28d',
+    render:(t)=>{
+      const head = Math.floor(t*2.5*N)%N, out=[];
+      for(let i=0;i<N;i++){
+        const d = (head - i + N)%N;
+        out.push(hsv(P.hue,1,P.brightness*(d<4 ? 1-0.28*d : 0)));
+      }
+      return out;
+    }
+  },
+  {
+    id:'twin', cn:'双点对撞', key:'1.6 圈/秒',
+    desc:'两个亮点相隔 4 颗对向旋转，像对撞一样，比单点追光更热闹。',
+    param:'head 与 head+4 各带 2 颗拖尾',
+    render:(t)=>{
+      const h1 = Math.floor(t*1.6*N)%N, out=[];
+      for(let i=0;i<N;i++){
+        let k = 0;
+        const d1 = (h1 - i + N)%N, d2 = (h1+4 - i + N)%N;
+        if (d1 < 3) k = Math.max(k, 1-0.34*d1);
+        if (d2 < 3) k = Math.max(k, 1-0.34*d2);
+        out.push(hsv(P.hue,1,P.brightness*k));
+      }
+      return out;
+    }
+  },
+  {
+    id:'mirror', cn:'镜像呼吸', key:'1.8s 周期',
+    desc:'以 0 号灯为中心向两侧对称点亮，像从中间张开又合上。识别到人脸/被触摸时用。',
+    param:'d = min(i, 8-i)，k = 1-0.22d，再乘呼吸',
+    render:(t)=>{
+      const br = 0.5+0.5*Math.sin(PI2*t/1.8), out=[];
+      for(let i=0;i<N;i++){
+        const d = Math.min(i, N-i);
+        out.push(hsv(P.hue,1,P.brightness*(1-0.20*d)*(0.25+0.75*br)));
+      }
+      return out;
+    }
+  },
+  {
+    id:'pulse', cn:'脉冲扩散', key:'1.4s 一次',
+    desc:'一圈光波从 0 号灯向两侧扩散出去，跑满一圈就重来。适合"正在思考/刚被唤醒"。',
+    param:'w = (t/1.4)%1·8，k = 1-|d-w|/2.2（d 取环形距离）',
+    render:(t)=>{
+      const w = ((t/1.4)%1)*N, out=[];
+      for(let i=0;i<N;i++){
+        const d = Math.min((i-w+N*2)%N, (w-i+N*2)%N);   // 环上最短距离
+        const k = Math.max(0, 1-Math.abs(d)/2.2);
+        out.push(hsv(P.hue,1,P.brightness*k));
+      }
+      return out;
+    }
+  },
+  {
+    id:'fire', cn:'火焰', key:'随机跳动',
+    desc:'橙红随机闪烁，每颗灯自己抖，像一小圈火光。比"单色"有生气又不刺眼。',
+    param:'v_i = 0.55+0.45·rand，色相 8~34°',
+    render:()=>{
+      const out=[];
+      for(let i=0;i<N;i++){
+        // 每帧随机 + 一点惯性，避免变成雪花噪点
+        const target = 0.45 + Math.random()*0.55;
+        st.fire[i] += (target - st.fire[i]) * 0.45;
+        const h = 8 + 26*st.fire[i];
+        out.push(hsv(h,1,P.brightness*st.fire[i]));
+      }
+      return out;
+    }
+  },
+  {
+    id:'starry', cn:'星空闪烁', key:'随机 0.25s',
+    desc:'随机挑一颗灯亮起，然后慢慢淡下去，像星空忽明忽暗。很安静的待机效果。',
+    param:'每 0.25s 随机点亮一颗，亮度按 0.93 衰减',
+    render:(t)=>{
+      for(let i=0;i<N;i++){
+        st.starT[i] -= STEP;
+        if (st.starT[i] <= 0){ st.star[i] *= 0.93; if (st.star[i] < 0.03) st.star[i] = 0; }
+      }
+      if (Math.floor(t/0.25) !== st._lastStar){
+        st._lastStar = Math.floor(t/0.25);
+        const i = Math.floor(Math.random()*N);
+        st.star[i] = 0.6 + Math.random()*0.4; st.starT[i] = 0.35;
+      }
+      return st.star.map(v => hsv(P.hue,0.65,P.brightness*v));
+    }
+  },
+  {
+    id:'level', cn:'电平环', key:'跟音量',
+    desc:'像音量表：声音越大，点亮的灯越多（从 0 号灯顺时针填）。和"音乐律动"同一套色带，'+
+         '区别是它不跳、只安静地显示当前音量。',
+    param:'lit = 1 + env·7（0 号起顺时针），色带同音乐律动',
+    render:(t,lv)=>{
+      const lit = 1 + Math.round(lv*(N-1));
+      const out=[];
+      for(let i=0;i<N;i++){
+        let k = 0;
+        if (i < lit-1) k = 1;
+        else if (i === lit-1) k = 1 - ((lv*(N-1)) % 1)*0.7;
+        const c = barColor(i/(N-1));
+        out.push([c[0]*P.brightness*(0.25+0.75*k), c[1]*P.brightness*(0.25+0.75*k), c[2]*P.brightness*(0.25+0.75*k)]);
+      }
+      return out;
+    }
+  },
+  {
+    id:'music', cn:'音乐律动 ★', key:'放歌自动',
+    desc:'放歌时自动进入 —— 就参考图那种"音乐节奏氛围灯"，只不过条排成了环形：'+
+         '音量越大条越长（从底部向两侧一起生长），【颜色绑在位置上、不随音量变】：'+
+         '条底青 → 蓝 → 紫 → 粉 → 红 → 橙 → 黄 → 顶部绿（同参考图的色阶）。'+
+         '条上方那颗单独的亮青灯是【峰值点】，停在最高处再慢慢滑下来（参考图里那些悬空的小色块）。'+
+         '鼓点一来立刻弹起、声音停了慢慢落下（快攻慢放），所以是跟着节奏跳而不是频闪。歌停自动恢复原灯效。',
+    param:'bar = round(env·7)；从底部 4 号灯向两侧生长；色阶固定绑位置(可用开关翻转)；峰值点亮青 每帧下落 0.9/s',
+    render:(t,lv)=>{
+      /* 条的"高度"= 音量；从底部(4 号灯, 因为 0 号在正上方)向两侧一起长 */
+      const order = [4,3,5,2,6,1,7,0];
+      const bar = Math.max(0, Math.round(lv*(N-1)));   /* 0..7, 至少亮底部一颗 */
+      /* 峰值点: 取最大值保持, 然后缓慢下落(每帧 -0.9/40 = 0.0225) */
+      st.peak = Math.max(lv, st.peak - 0.9*STEP);
+      const pk = Math.max(0, Math.round(st.peak*(N-1)));
+
+      const out = new Array(N).fill([0,0,0]);
+      for (let k = 0; k <= bar && k < N; k++){
+        const c = barColor(k/(N-1));                  /* 按"高度"取色: 绿→黄→红 */
+        const v = (k === 0) ? Math.max(0.35, 0.35+0.65*lv) : 0.55+0.45*lv;  /* 底部常亮一点 */
+        out[order[k]] = [c[0]*P.brightness*v, c[1]*P.brightness*v, c[2]*P.brightness*v];
+      }
+      if (pk > bar && pk < N)                          /* 峰值点(青) */
+        out[order[pk]] = [PEAK_COLOR[0]*P.brightness, PEAK_COLOR[1]*P.brightness, PEAK_COLOR[2]*P.brightness];
+      return out;
+    }
+  },
+  {
+    id:'music_bands', cn:'音乐频谱（8 段）', key:'放歌自动',
+    desc:'真·频谱：8 颗灯各代表一个频段（低频在底部 4 号，向两侧往高频走），'+
+         '每颗的亮度与颜色都跟着它那个频段的能量走 —— 低频鼓点砸下来时底部两颗先红，'+
+         '高频镲片一响两侧就闪。色带与上面的音乐律动同一套（绿→黄→红）。'+
+         '设备端不用做 FFT：低/中/高 3 个一阶滤波器 + 插值成 8 段就够像了。',
+    param:'band_i = env_i (快攻 0.60 / 慢放 0.09)；v = band_i，hue 取 barColor(v)',
+    render:(t,lv)=>{
+      const b = P.musicAuto ? stepBands(t) : bEnv;
+      const order = [4,3,5,2,6,1,7,0];                  // 底部→两侧(同音乐律动)
+      const out = new Array(N).fill([0,0,0]);
+      for (let i=0;i<N;i++){
+        /* i 是"频段序号"：0=最低频 → 放在底部，8=N-1 最高频 → 最靠外 */
+        const v = clamp01(b[i]);
+        if (v < 0.03) continue;
+        const c = barColor(v);                          // 能量越大越靠色带右端(红)
+        const k = 0.30 + 0.70*v;
+        out[order[i]] = [c[0]*P.brightness*k, c[1]*P.brightness*k, c[2]*P.brightness*k];
+      }
+      return out;
+    }
+  },
+  {
+    id:'police', cn:'警车爆闪', key:'0.11s 交替',
+    desc:'红蓝交替爆闪，报警/紧急提醒用。闪得比较狠，别长时间开。',
+    param:'0.11s 红 / 0.11s 蓝，相位末尾 15ms 全灭',
+    render:(t)=>{
+      const phase = Math.floor(t/0.11);
+      let k = (t%0.11) > 0.095 ? 0 : 1;
+      const c = (phase & 1) ? [0,0,1] : [1,0,0];
+      return new Array(N).fill(c.map(v=>v*P.brightness*k));
+    }
+  },
+];
+
+/* =========================================================================
+   渲染：画环形（0 号在正上方，顺时针）
+   ========================================================================= */
+function drawRing(cv, px, ledR, frame, opt){
+  const g = cv.getContext('2d');
+  const W = cv.width, H = cv.height, cx = W/2, cy = H/2, R = px;
+  g.clearRect(0,0,W,H);
+
+  /* 底盘 */
+  g.beginPath(); g.arc(cx,cy,R+ledR*1.75,0,PI2);
+  g.fillStyle = opt.big ? 'rgba(12,18,38,.85)' : 'rgba(10,15,32,.6)'; g.fill();
+  g.strokeStyle = '#1e2743'; g.lineWidth = 1.5; g.stroke();
+
+  /* 未点亮灯珠底衬 + 已点亮 */
+  for (let i=0;i<N;i++){
+    const a = -Math.PI/2 + PI2*i/N;
+    const x = cx + Math.cos(a)*R, y = cy + Math.sin(a)*R;
+    const c = frame[i] || [0,0,0];
+    const v = Math.max(c[0],c[1],c[2]);
+
+    g.beginPath(); g.arc(x,y,ledR,0,PI2);
+    g.fillStyle = '#0e1530'; g.fill();
+    g.strokeStyle = '#232e52'; g.lineWidth = 1; g.stroke();
+
+    if (v > 0.004){
+      const col = `rgb(${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)})`;
+      g.save();
+      g.shadowColor = col;
+      g.shadowBlur  = Math.max(6, ledR*1.5*v);
+      g.beginPath(); g.arc(x,y,ledR*(0.72+0.28*v),0,PI2);
+      g.fillStyle = col; g.fill();
+      g.restore();
+      /* 高光，让珠子看起来是发光的球 */
+      g.beginPath(); g.arc(x-ledR*0.22,y-ledR*0.28,ledR*0.30,0,PI2);
+      g.fillStyle = `rgba(255,255,255,${0.10+0.30*v})`; g.fill();
+    }
+
+    if (opt.big){
+      g.fillStyle = '#6b7aa4'; g.font = '12px ui-monospace,monospace';
+      g.textAlign='center'; g.textBaseline='middle';
+      const lx = cx + Math.cos(a)*(R+ledR*1.45), ly = cy + Math.sin(a)*(R+ledR*1.45);
+      g.fillText(i, lx, ly);
+    }
+  }
+
+  /* 电流预算占用（设备端超过预算会整体等比压暗） */
+  if (opt.big){
+    let sum = 0;
+    for (const c of frame) sum += Math.max(c[0],c[1],c[2]);
+    const pct = Math.min(100, Math.round(sum/ (N*P.brightness) *100));
+    const el = document.getElementById('bud');
+    if (el) el.textContent = pct + '%';
+  }
+}
+
+/* =========================================================================
+   固定 40Hz 步进 + 浏览器按帧重画
+   ========================================================================= */
+let simT = 0, last = performance.now(), acc = 0, cur = 'music';
+let frame = new Array(N).fill([0,0,0]);
+
+function fxIndex(id){ return FX.findIndex(f=>f.id===id); }
+function fxById(id){ return FX.find(f=>f.id===id) || FX[0]; }
+
+function step(dtMs){
+  acc += dtMs;
+  let guard = 0;
+  while (acc >= STEP*1000 && guard++ < 8){
+    acc -= STEP*1000;
+    simT += STEP*P.speed;
+    const lv = stepMusicLevel(simT);
+    frame = fxById(cur).render(simT, lv);
+  }
+}
+
+/* ---------- 主循环 ---------- */
+const bigCv = document.getElementById('big');
+function loop(now){
+  const dt = Math.min(120, now-last); last = now;
+  step(dt);
+  drawRing(bigCv, 175, 26, frame, {big:true});
+  for (const t of tiles){
+    if (t.fx.id === cur) { t.ctx.clearRect(0,0,t.cv.width,t.cv.height); continue; }
+    const f = t.fx.render(t.t, stepMusicLevel(t.t));
+    t.t += STEP*P.speed;
+    drawRing(t.cv, 42, 7, f, {big:false});
+  }
+  requestAnimationFrame(loop);
+}
+
+/* =========================================================================
+   UI
+   ========================================================================= */
+const listEl = document.getElementById('fxlist');
+const gridEl = document.getElementById('grid');
+const tiles  = [];
+
+FX.forEach(f=>{
+  const d = document.createElement('div');
+  d.className = 'fx' + (f.id===cur?' on':'');
+  d.dataset.id = f.id;
+  d.innerHTML = `<i></i><span class="m">${f.cn}<br><em>${f.key}</em></span>`;
+  d.onclick = ()=> select(f.id);
+  listEl.appendChild(d);
+
+  const t = document.createElement('div');
+  t.className = 'tile' + (f.id===cur?' on':'');
+  t.dataset.id = f.id;
+  t.innerHTML = `<canvas width="176" height="176"></canvas><div class="nm">${f.cn}</div><div class="id">${f.id}</div>`;
+  t.onclick = ()=> select(f.id);
+  gridEl.appendChild(t);
+  const cv = t.querySelector('canvas');
+  tiles.push({ fx:f, cv, ctx:cv.getContext('2d'), t:Math.random()*4, el:t });
+
+  /* 参数表 */
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td><code>${f.id}</code></td><td>${f.cn}</td><td>${f.desc}<br>
+                  <span style="color:#93a0c4">${f.param}</span></td>`;
+  document.getElementById('ptable').appendChild(tr);
+});
+
+function select(id){
+  if (id !== cur) reseed();
+  cur = id;
+  document.getElementById('nm').textContent = fxById(id).cn;
+  document.getElementById('fid').textContent = id;
+  document.querySelectorAll('.fx').forEach(e=>e.classList.toggle('on', e.dataset.id===id));
+  document.querySelectorAll('.tile').forEach(e=>e.classList.toggle('on', e.dataset.id===id));
+  const i = fxIndex(id);
+  if (i >= 0){ const t = tiles[i]; t.t = simT; }   // 缩略图时间对齐，切换不跳
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+
+const br = document.getElementById('br'), brv = document.getElementById('brv');
+br.oninput = ()=>{ P.brightness = br.value/100; brv.textContent = br.value; };
+const sp = document.getElementById('sp'), spv = document.getElementById('spv');
+sp.oninput = ()=>{ P.speed = sp.value/100; spv.textContent = P.speed.toFixed(1); };
+const col = document.getElementById('col');
+col.oninput = ()=>{
+  const r = parseInt(col.value.slice(1,3),16)/255, g = parseInt(col.value.slice(3,5),16)/255, b = parseInt(col.value.slice(5,7),16)/255;
+  const mx = Math.max(r,g,b), mn = Math.min(r,g,b), d = mx-mn;
+  let h = 0;
+  if (d > 0){
+    if (mx===r)      h = 60*(((g-b)/d)%6);
+    else if (mx===g) h = 60*((b-r)/d + 2);
+    else             h = 60*((r-g)/d + 4);
+  }
+  P.hue = ((h%360)+360)%360;
+  document.getElementById('colnm').textContent = col.value;
+};
+const lv = document.getElementById('lv'), lvv = document.getElementById('lvv');
+lv.oninput = ()=>{ P.musicManual = lv.value/100; lvv.textContent = P.musicManual.toFixed(2); };
+document.getElementById('autolv').onchange = (e)=>{
+  P.musicAuto = e.target.checked;
+  lv.disabled = P.musicAuto;
+  lvv.textContent = P.musicAuto ? '自动' : P.musicManual.toFixed(2);
+};
+lv.disabled = true;
+document.getElementById('flip').onchange = (e)=>{ P.flip = e.target.checked; };
+
+/* 初始化主色（跟色板一致） */
+col.dispatchEvent(new Event('input'));
+
+select('music');
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

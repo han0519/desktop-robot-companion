@@ -1,0 +1,177 @@
+﻿<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>桌面摆件机器人 · 接线卡片</title>
+<style>
+*{box-sizing:border-box;-webkit-print-color-adjust:exact}
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f0f1a;color:#e8eaf2;margin:0;padding:26px 18px 60px}
+.wrap{max-width:900px;margin:0 auto}
+h1{text-align:center;font-size:24px;color:#00d4ff;margin:0 0 4px;letter-spacing:1px}
+.sub{text-align:center;color:#8b95bb;font-size:12.5px;margin-bottom:20px}
+.tag{display:inline-block;padding:2px 10px;border:1px solid #2a2a44;border-radius:20px;margin:0 3px;font-size:11px;color:#8b95bb;background:#16213e}
+.sec{font-size:13px;color:#00d4ff;letter-spacing:2px;margin:26px 0 10px;padding-left:10px;border-left:3px solid #00d4ff}
+.card{background:#1a1a2e;border:1px solid #2a2a44;border-radius:14px;padding:16px 18px;margin-bottom:14px}
+.chain{font-family:Consolas,Menlo,monospace;font-size:12.5px;line-height:1.9;color:#cdd6f4;white-space:pre-wrap;background:#12121e;border:1px solid #2a2a44;border-radius:10px;padding:14px 16px;overflow-x:auto}
+.chain b{color:#ffb347}
+table{width:100%;border-collapse:collapse;font-size:12.8px}
+th{background:#16213e;color:#8b95bb;font-weight:600;text-align:left;padding:8px 10px;border:1px solid #2a2a44;font-size:12px}
+td{padding:7px 10px;border:1px solid #23233c;color:#dfe4f2}
+tr:nth-child(even) td{background:#171728}
+.pin{display:inline-block;font-family:Consolas,monospace;font-weight:bold;color:#001018;background:#00d4ff;border-radius:5px;padding:1px 7px;font-size:12px}
+.note{font-size:12px;color:#ff9f9f;line-height:1.7;margin-top:8px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.foot{text-align:center;color:#5a6488;font-size:11px;margin-top:24px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>桌面摆件机器人 · 接线卡片</h1>
+<div class="sub">ESP32-S3-N16R8 &nbsp;
+<span class="tag">SSD1305 OLED</span><span class="tag">INMP441</span><span class="tag">MAX98357A</span>
+<span class="tag">WS2812×8</span><span class="tag">SG90×2</span><span class="tag">FC-51×2</span>
+<span class="tag">TTP223×2</span><span class="tag">DHT11</span><span class="tag">充电模块</span><span class="tag">7.4V×2串</span>
+</div>
+<div class="sec">① 电源链路（先接这个）</div>
+<div class="card">
+<div class="chain">
+2串锂电池 <b>7.4V</b>（充满 8.4V）
+   ├─ 电池正极 ──→ 充电模块 <b>B+</b>
+   └─ 电池负极 ──→ 充电模块 <b>B-</b>
+                     │
+充电模块 <b>B+</b> ──→ 自锁开关 脚1      ← 正极过开关，关断=整机断电
+开关     脚2 ──→ 电源模块 输入端子 <b>+</b>
+充电模块 <b>B-</b> ──→ 电源模块 输入端子 <b>-</b>
+                     │
+        ┌────────────┼────────────┐
+     <b>5V(3A)</b>     <b>3.3V(3A)</b>      <b>GND</b>
+    绿色排针      黄色排针       黑色排针
+</div>
+<div class="note">⚠ Type-C 只接充电模块 USB 口，<b>仅充电时插</b>，充满拔掉。充电时建议关掉整机开关。</div>
+</div>
+
+<div class="grid2">
+<div class="card">
+<div class="sec" style="margin-top:0">② 5V 分配（电源模块绿色排针）</div>
+<table>
+<tr><th>设备</th><th>接哪里</th></tr>
+<tr><td>ESP32-S3 开发板</td><td class="v5">5V</td></tr>
+<tr><td>舵机1 左右转头（红线）</td><td class="v5">5V</td></tr>
+<tr><td>舵机2 上下点头（红线）</td><td class="v5">5V</td></tr>
+<tr><td>MAX98357A VIN</td><td class="v5">5V</td></tr>
+<tr><td>WS2812 灯环 VCC</td><td class="v5">5V（5V器件，别接3.3V）</td></tr>
+</table>
+</div>
+<div class="card">
+<div class="sec" style="margin-top:0">③ 3.3V 分配（黄色排针）</div>
+<table>
+<tr><th>设备</th><th>接哪里</th></tr>
+<tr><td>SSD1305 OLED VCC</td><td class="v33">3.3V</td></tr>
+<tr><td>INMP441 VDD</td><td class="v33">3.3V</td></tr>
+<tr><td>TTP223 ×2 VCC</td><td class="v33">3.3V</td></tr>
+<tr><td>DHT11 VCC</td><td class="v33">3.3V</td></tr>
+<tr><td>FC-51 红外 ×2 VCC</td><td class="v33">3.3V</td></tr>
+</table>
+</div>
+</div>
+
+<div class="card">
+<div class="sec" style="margin-top:0">④ GND（黑色排针）</div>
+<div class="note" style="color:#7ee787">所有设备的 GND 全部接到电源模块 GND，ESP32 开发板的 GND 也要接过去 —— <b>必须共地</b>。</div>
+</div>
+
+<div class="sec">⑤ 信号引脚总表</div>
+<div class="card">
+<table>
+<tr><th>GPIO</th><th>功能</th><th>配件</th></tr>
+<tr><td><span class="pin">4</span></td><td>I2S SD（关断控制）</td><td>MAX98357A 功放</td></tr>
+<tr><td><span class="pin">5</span></td><td>I2S BCLK</td><td>MAX98357A 功放</td></tr>
+<tr><td><span class="pin">6</span></td><td>I2S LRC/WS</td><td>MAX98357A 功放</td></tr>
+<tr><td><span class="pin">7</span></td><td>I2S DOUT</td><td>MAX98357A 功放</td></tr>
+<tr><td><span class="pin">9</span></td><td>I2S BCLK</td><td>INMP441 麦克风</td></tr>
+<tr><td><span class="pin">10</span></td><td>I2S WS</td><td>INMP441 麦克风</td></tr>
+<tr><td><span class="pin">11</span></td><td>I2S DIN</td><td>INMP441 麦克风</td></tr>
+<tr><td><span class="pin">17</span></td><td>I2C SDA</td><td>SSD1305 OLED</td></tr>
+<tr><td><span class="pin">18</span></td><td>I2C SCL</td><td>SSD1305 OLED</td></tr>
+<tr><td><span class="pin">8</span></td><td>单总线 DATA</td><td>DHT11 温湿度</td></tr>
+<tr><td><span class="pin">15</span></td><td>触摸 SIG</td><td>TTP223-1 头部（摸头撸猫）</td></tr>
+<tr><td><span class="pin">16</span></td><td>触摸 SIG</td><td>TTP223-2 身体（切灯效）</td></tr>
+<tr><td><span class="pin">38</span></td><td>数字输入</td><td>FC-51 红外（左）</td></tr>
+<tr><td><span class="pin">39</span></td><td>数字输入</td><td>FC-51 红外（右）</td></tr>
+<tr><td><span class="pin">12</span></td><td>PWM</td><td>SG90 舵机1（左右转头）</td></tr>
+<tr><td><span class="pin">13</span></td><td>PWM</td><td>SG90 舵机2（上下点头）</td></tr>
+<tr><td><span class="pin">3</span></td><td>单线 DATA</td><td>WS2812 灯环</td></tr>
+</table>
+<div class="note">不可用：GPIO0(BOOT) / 43,44(串口) / 19,20(USB) / <b>35,36,37(Octal PSRAM 占用)</b> / 46(仅输入) / 48(板载灯)</div>
+</div>
+
+<div class="sec">⑥ 各配件逐针接线</div>
+<div class="grid2">
+<div class="card">
+<table>
+<tr><th colspan="2">SSD1305 OLED（4针）</th></tr>
+<tr><td>VCC / GND</td><td>3.3V / GND</td></tr>
+<tr><td>SCL</td><td><span class="pin">GPIO18</span></td></tr>
+<tr><td>SDA</td><td><span class="pin">GPIO17</span></td></tr>
+</table>
+<table style="margin-top:12px">
+<tr><th colspan="2">INMP441 麦克风</th></tr>
+<tr><td>VDD / GND</td><td>3.3V / GND</td></tr>
+<tr><td>SCK</td><td><span class="pin">GPIO9</span></td></tr>
+<tr><td>WS</td><td><span class="pin">GPIO10</span></td></tr>
+<tr><td>SD</td><td><span class="pin">GPIO11</span></td></tr>
+<tr><td>L/R</td><td class="gnd">接 GND</td></tr>
+</table>
+<table style="margin-top:12px">
+<tr><th colspan="2">MAX98357A 功放</th></tr>
+<tr><td>VIN / GND</td><td>5V / GND</td></tr>
+<tr><td>BCLK / LRC / DIN</td><td><span class="pin">5</span> / <span class="pin">6</span> / <span class="pin">7</span></td></tr>
+<tr><td>SD</td><td><span class="pin">4</span></td></tr>
+<tr><td>GAIN</td><td>悬空</td></tr>
+<tr><td>扬声器</td><td>绿色螺丝端子 +/-</td></tr>
+</table>
+</div>
+<div class="card">
+<table>
+<tr><th colspan="2">SG90 舵机 ×2</th></tr>
+<tr><td>舵机1 左右转头</td><td>红=5V 棕=GND 橙=<span class="pin">GPIO12</span></td></tr>
+<tr><td>舵机2 上下点头</td><td>红=5V 棕=GND 橙=<span class="pin">GPIO13</span></td></tr>
+</table>
+<table style="margin-top:12px">
+<tr><th colspan="2">TTP223 触摸 ×2</th></tr>
+<tr><td>触摸1 头部</td><td>VCC=3.3V SIG=<span class="pin">GPIO15</span></td></tr>
+<tr><td>触摸2 身体</td><td>VCC=3.3V SIG=<span class="pin">GPIO16</span></td></tr>
+</table>
+<table style="margin-top:12px">
+<tr><th colspan="2">FC-51 红外 ×2 / DHT11</th></tr>
+<tr><td>红外 左</td><td>3.3V / GND / OUT=<span class="pin">GPIO38</span></td></tr>
+<tr><td>红外 右</td><td>3.3V / GND / OUT=<span class="pin">GPIO39</span></td></tr>
+<tr><td>DHT11</td><td>3.3V / GND / DATA=<span class="pin">GPIO8</span></td></tr>
+</table>
+<table style="margin-top:12px">
+<tr><th colspan="2">WS2812 灯环（8珠）</th></tr>
+<tr><td>VCC（红）</td><td class="v5">5V</td></tr>
+<tr><td>GND（黑）</td><td class="gnd">GND</td></tr>
+<tr><td>DATA（黄/白）</td><td><span class="pin">GPIO3</span></td></tr>
+</table>
+</div>
+</div>
+
+<div class="sec">⑦ 注意事项</div>
+<div class="card">
+<div class="note" style="color:#dfe4f2">
+1. <b>共地</b>：所有 GND 都接电源模块 GND（含 ESP32 开发板）<br>
+2. 插拔舵机/模块 <b>先断电</b><br>
+3. WS2812 是 <b>5V</b> 器件，不要接 3.3V；珠子多或首珠不亮就在 DATA 加电平转换（74HCT245）<br>
+4. 接线顺序建议：电源 → ESP32 → OLED → 舵机 → 触摸/红外/DHT11 → 音频 → 灯环<br>
+5. 3 个舵机同转峰值约 1.5A，电源模块 5V/3A 够用<br>
+6. 电池供电时不插开发板 Type-C，烧录时才插
+</div>
+</div>
+
+<div class="foot">github.com/han0519/desktop-robot-companion · 详细文档见 docs/WIRING.md</div>
+</div>
+</body>
+</html>
+

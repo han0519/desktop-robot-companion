@@ -37,6 +37,15 @@ const char *wake_word_feed(const int16_t *pcm, size_t samples);
 /** 清空引擎内部状态（对话结束后调用，避免残留音频串扰下一次） */
 void wake_word_reset(void);
 
+/**
+ * @brief 重建引擎（销毁模型实例后重新创建）
+ *
+ * 用于"长时间没喂音频"之后（例如播了半分钟音乐）。只调 wake_word_reset()
+ * 只清累积缓冲，模型内部的特征队列仍是旧的，恢复后唤醒率极低 ——
+ * 表现就是"放完歌怎么喊都喊不出来"。
+ */
+void wake_word_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

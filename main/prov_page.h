@@ -44,6 +44,15 @@ button:active{opacity:.85}
   text-align:left;font-size:13px;margin-bottom:16px}
 .card .r{display:flex;justify-content:space-between;padding:3px 0}
 .card .r span:last-child{color:#58d5ff}
+.aplist{max-height:190px;overflow:auto;border:1px solid #30363d;border-radius:8px;background:#0d1117}
+.ap{display:flex;justify-content:space-between;align-items:center;padding:11px 12px;font-size:14px;
+  border-bottom:1px solid #21262d;cursor:pointer}
+.ap:last-child{border-bottom:none}
+.ap:active{background:#1f2937}
+.ap .lvl{font-size:11px;color:#8b949e;flex:0 0 auto;margin-left:8px}
+.apm{padding:12px;font-size:13px;color:#8b949e}
+.rescan{margin-top:8px;width:100%;padding:9px;border-radius:8px;border:1px solid #30363d;
+  background:#0d1117;color:#8b949e;font-size:13px;font-weight:400;cursor:pointer}
 </style>
 </head>
 <body>
@@ -53,7 +62,7 @@ button:active{opacity:.85}
   <div class="sub">连接你家 Wi-Fi，就能开始和小智对话</div>
 
   <div class="code">
-    <div class="k">激活码 · 去 xiaozhi.me 添加设备时用</div>
+    <div class="k">激活码 · 去 xiaozhi.me 添加设备时用（连上网后服务端才下发）</div>
     <div class="v" id="act">--</div>
   </div>
 
@@ -63,8 +72,13 @@ button:active{opacity:.85}
   </div>
 
   <div class="form">
+    <label>选择你家的 Wi-Fi（点一下自动填入）</label>
+    <div class="aplist" id="aplist">
+      <div class="apm" id="apmsg">正在扫描周围的 Wi-Fi…</div>
+    </div>
+    <button class="rescan" onclick="scan()">重新扫描</button>
     <label>Wi-Fi 名称</label>
-    <input id="s" placeholder="请输入 2.4G Wi-Fi 名称" autocomplete="off">
+    <input id="s" placeholder="点上面列表自动填入, 也可手打" autocomplete="off">
     <label>Wi-Fi 密码</label>
     <input id="p" type="password" placeholder="没有密码请留空">
     <button onclick="save()">连接 Wi-Fi</button>
@@ -82,13 +96,38 @@ button:active{opacity:.85}
 var t=setInterval(poll,2000);
 function poll(){
   fetch('/status').then(function(r){return r.json();}).then(function(d){
-    document.getElementById('act').textContent=(d.act&&d.act!='')?d.act:'（已激活）';
+    /* ★ 空激活码 ≠ 已激活! 只表示"服务端还没下发"(比如还没连上网)。
+       以前显示"（已激活）", 让新板子看起来已经激活了 —— 就是这个误导。 */
+    document.getElementById('act').textContent=(d.act&&d.act!='')?d.act:'—（未下发）';
     document.getElementById('st').textContent=d.ai||'--';
     document.getElementById('pvd').textContent=(d.ip&&d.ip!='')?(d.ip):'未连接';
     if(d.ip&&d.ip!=''){ clearInterval(t); document.getElementById('m').textContent='已联网：'+d.ip; }
   }).catch(function(){});
 }
 poll();
+/* ---- 扫描周围 Wi-Fi 并列出, 点一下就把 SSID 填进输入框(不用手打) ---- */
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function lvl(r){ return r>=-60?'信号强':(r>=-75?'信号中':'信号弱'); }
+function scan(){
+  var box=document.getElementById('aplist');
+  box.innerHTML='<div class="apm">正在扫描周围的 Wi-Fi…（约 2 秒）</div>';
+  fetch('/scan').then(function(r){return r.json();}).then(function(d){
+    if(!d.list||!d.list.length){ box.innerHTML='<div class="apm">没扫到 Wi-Fi —— 请确认路由器是 2.4GHz, 或直接在下面手打名称</div>'; return; }
+    box.innerHTML=d.list.map(function(a){
+      return '<div class="ap" onclick="pick(this)"><span>'+esc(a.ssid)+'</span>'+
+             '<span class="lvl">'+lvl(a.rssi)+'</span></div>';
+    }).join('');
+    box.querySelectorAll('.ap').forEach(function(el){
+      el.dataset.ssid = d.list[[].indexOf.call(box.querySelectorAll('.ap'), el)].ssid;
+    });
+  }).catch(function(){ box.innerHTML='<div class="apm">扫描失败, 请在下面手打 Wi-Fi 名称</div>'; });
+}
+function pick(el){
+  document.getElementById('s').value = el.dataset.ssid || el.querySelector('span').textContent;
+  document.getElementById('p').focus();
+  document.getElementById('m').textContent = '已选择: ' + document.getElementById('s').value + ' ，请输入密码';
+}
+scan();
 function save(){
   var s=document.getElementById('s').value.trim();
   var p=document.getElementById('p').value;

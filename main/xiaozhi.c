@@ -9,6 +9,7 @@
 #include "config.h"
 #include "face.h"
 #include "persona.h"
+#include "ne_client.h"    /* ne_cookie_save_pending/now: 登录态落盘(本任务栈在内部 RAM) */
 #include "mic_inmp441.h"
 #include "speaker_max98357a.h"
 #include "esp_log.h"
@@ -149,6 +150,13 @@ static struct {
     /* --- 音乐互斥: 播音乐时挂起整条 AI 音频链(详见 ai_client_set_audio_suspended) --- */
     volatile bool audio_suspended;
     int         suspend_log;    /* 挂起期间只打一次日志 */
+    volatile bool ww_restart_req;  /* 请求重建唤醒词引擎(必须由音频任务执行, 见下) */
+    volatile bool sb_flush_req;    /* 请求清空下行音频缓冲(必须由音频任务做:
+                                      xStreamBufferReset 只允许在读者上下文调,
+                                      别的任务 reset 会和 WS 写者竞态, 且读者
+                                      正阻塞在 Receive 时 reset 会静默失败) */
+    volatile bool mic_drain_req;   /* 请求丢弃麦克风积压(同理: 麦克风只能由
+                                      音频任务读, 双消费者会互相挖洞) */
     /* --- VAD --- */
     bool        vad_on;
     bool        vad_session;    /* 当前这轮对话是 VAD 自动开始的 */
@@ -172,6 +180,9 @@ static struct {
        把音乐那条 TCP 也拖死(日志: 178482 重建失败 → 182742 音乐缓冲掉到 0
        → 184872 判"流断了")。而且播音乐时 AI 音频本来就挂起, 有连接也没用。 */
     volatile bool pending_rebuild;
+    /* ★ 音乐模式: 播歌期间 AI 整个让路(音频链挂起 + WebSocket 关闭释放内存),
+       停歌或摸头顶三下暂停后自动恢复。见 ai 任务里的 music_mode 分支。 */
+    volatile bool music_mode;
     /* --- 播报收尾 --- */
     bool        tts_draining;   /* 服务端已说"发完", 等缓冲放空再真正结束 */
     uint32_t    tts_start_ms;   /* 本轮播报开始时刻(用于抖动缓冲攒帧计时) */
@@ -479,10 +490,43 @@ static void zx_send_wake_detected(const char *word)
     zx_send_json(o);
 }
 
+/* ★ 统一的"强制回 IDLE"(异常收尾路径专用: WS 断开 / abort / 音乐挂起)。
+ * 这些路径以前只把 mode 拍成 IDLE, 有两个真实踩过的坑:
+ *   ① speaker_set_hold(true) 是在 tts start 钉住的, 唯一正常释放点是
+ *      zx_finish_speaking(); 异常路径绕过它 → 功放永久钉死, 静态底噪一直响。
+ *   ② xStreamBufferReset 只允许在【读者】(音频任务)上下文调 —— 别的任务
+ *      reset 会与 WS 写者竞态, 且音频任务正阻塞在 Receive 时 reset 静默失败。
+ * 所以这里只放功放 + 拍状态, 清缓冲改成挂标志交给音频任务。 */
+static void zx_force_idle(void)
+{
+    speaker_set_hold(false);
+    zx.mode          = MODE_IDLE;
+    zx.tts_draining  = false;
+    zx.tts_start_ms  = 0;
+    zx.speak_idle_ms = 0;
+    zx.vad_session   = false;
+    zx.sb_flush_req  = true;
+}
+
+/* 丢弃麦克风里积压的旧样本(应答音期间的"叮咚"等)。
+ * ★ 只能在音频任务里调: 音频任务正阻塞在 mic_read 上, 从别的任务再读
+ * 同一个 I2S 就是双消费者, 会把音频任务的帧挖出洞 —— 唤醒词的前提是
+ * "一个样本都不能丢"。 */
+static void mic_drain_backlog(void)
+{
+    static int16_t junk[256];
+    for (int i = 0; i < 12; i++) {
+        if (mic_read(junk, 256, 0) < 128) break;
+    }
+}
+
 /* 一轮播报"真正"结束: 回 IDLE / 冷却 / 连续对话重新聆听。
    必须在缓冲放空之后才调用 —— 提前调用会把没播完的帧丢掉。 */
 static void zx_finish_speaking(void)
 {
+    /* ★ 放开功放(播报期间是钉住的)。放在最前面且不判 mode ——
+       否则某条异常收尾路径会让功放一直钉着, 静态底噪一直响。 */
+    speaker_set_hold(false);
     if (zx.mode != MODE_SPEAK) return;
     zx.mode = MODE_IDLE;
     zx.tts_draining  = false;
@@ -527,6 +571,7 @@ static void zx_finish_speaking(void)
 }
 
 /* 开始一轮对话 (触摸触发与 VAD 触发共用) */
+static size_t txlen;              /* 定义在音频任务区(与 txacc 一起), 这里前置声明 */
 static void zx_begin_listen(void)
 {
     /* 协议要求: 设备发 hello → 服务端回 hello(带 session_id) → 之后才能发 listen。
@@ -543,14 +588,17 @@ static void zx_begin_listen(void)
 
     zx.mode = MODE_LISTEN;
     zx.silence_ms = 0;
-    /* 丢掉应答音期间的麦克风积压, 否则会把"叮咚"本身也送去识别 */
-    {
-        static int16_t junk[256];
-        for (int i = 0; i < 12; i++) {
-            if (mic_read(junk, 256, 0) < 128) break;
-        }
+    if (xTaskGetCurrentTaskHandle() == zx.audio_task) {
+        /* 音频任务自己调用(唤醒命中/VAD 触发的主路): 直接清 */
+        mic_drain_backlog();
+        txlen = 0;                    /* 上一轮没凑满的半帧旧音频, 别拼进这一轮 */
+        if (zx.sb) xStreamBufferReset(zx.sb);
+    } else {
+        /* 从别的任务调用(zx 任务的 want_listen 兜底/自检): 绝不能在这里
+           读麦克风或清 sb —— 双消费者会互相挖洞。挂标志, 音频任务下一拍做。 */
+        zx.mic_drain_req = true;
+        zx.sb_flush_req  = true;
     }
-    if (zx.sb) xStreamBufferReset(zx.sb);
     zx_send_listen("start");
     zx.heard_voice = false;
     zx.cont_idle_ms = 0;
@@ -644,6 +692,15 @@ static void zx_handle_json(const char *json, int len)
             zx.speak_idle_ms = 0;
             zx.dec_fail      = 0;
             zx.pending_emo[0] = '\0';     /* 新一轮, 清掉上一轮残留的情绪 */
+            /* ★★★ 播报期间必须【钉住功放】★★★
+             *
+             * MAX98357A 的空闲关断判据是"距上次 speaker_write 超过 120ms"。
+             * 而 TTS 帧是网络下发+解码的, 帧间偶有 >120ms 的空档, 空闲任务就会
+             * 在说话途中把功放关掉、下一帧又打开 —— 结果是咔哒声、断字、发闷,
+             * 用户听着就是"声音很糊"(实测日志: 刚解码 3 帧就出现"空闲 → 关断功放")。
+             * 播音乐时用 speaker_set_hold(true) 解决过同样的问题, 语音这条路
+             * 一直漏了, 现在补上(播报结束在 zx_finish_speaking 里放开)。 */
+            speaker_set_hold(true);
             ESP_LOGI(TAG, ">>> TTS 开始播报 (先攒 %d 字节抖动缓冲再开播, 累计rx=%u)",
                      PREBUFFER_BYTES, (unsigned)zx.rx);
             set_state("说话中");
@@ -795,8 +852,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
         ESP_LOGW(TAG, "WebSocket 断开");
         zx.ws_ready = false;
         zx.server_hello = false;
-        zx.mode = MODE_IDLE;
-        zx.tts_draining = false;
+        /* ★ 走 zx_force_idle: 这里以前直接 mode=IDLE —— 恰恰是代码在下面
+           goodbye 分支里警告过"会把最后一句截断"的那种做法, 而且功放 hold
+           永远放不开(静态底噪一直响)。服务端每轮答完关连接, 必经此路。 */
+        zx_force_idle();
         zx.session[0] = '\0';
         /* 这台服务端每轮回答完会主动关掉会话。若还在连续对话模式,
            排队"重连后继续聆听", 这样用户不用每轮都喊唤醒词。 */
@@ -833,6 +892,12 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
                     if (off + d->data_len >= d->payload_len) {
                         zx_handle_json(jbuf, d->payload_len);
                     }
+                } else {
+                    /* ★ 以前超长帧是静默丢弃的 —— 服务端下发 >4KB 的 JSON
+                       (比如超长的 tools 清单)会无声消失, 表现为"AI 突然不执行
+                       某功能", 极难排查。至少喊一声。 */
+                    ESP_LOGW(TAG, "超长 JSON 帧丢弃: payload=%u > 缓冲 %u",
+                             (unsigned)d->payload_len, (unsigned)sizeof(jbuf));
                 }
             }
         } else if (d->op_code == 0x02) {    /* 二进制 = TTS 的 Opus 帧 */
@@ -874,6 +939,242 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
 }
 
 /* ======================= 音频任务 ======================= */
+/* ======================= 播报音色(设备端 DSP 变声) =======================
+ * ★ xiaozhi.me 的"音色"是在它服务端的控制台里配的, 设备↔服务器协议里
+ *   根本没有"切换音色"的消息 —— 设备端做不到让服务器换声。
+ * 所以这里是设备端自己的【真·变声效果器】, 对播报解码后的 PCM 实时做:
+ * 变调重采样 / 环形调制(金属) / 幅度调制(电流) / 带通(对讲机) /
+ * 反馈回声(深空) / 软削波(失真)。全部一阶实现, 每样本十几次乘加,
+ * 24kHz 下占 CPU 不到 3%。
+ * 只影响 AI 播报, 不影响麦克风上行(不然上传的也变声, 识别会变差)。 */
+typedef enum {
+    FX_ORIGINAL = 0,   /* 原声 */
+    FX_METAL,          /* 机械金属: 环形调制(乘双极性低频振荡) → 金属质感 */
+    FX_DEEP,           /* 电子低沉: 变低 + 低通, 闷一点 */
+    FX_ALIEN,          /* 赛博外星: 变高变快 + 较高频环调 */
+    FX_ELEC,           /* 电流音: 50Hz 幅度调制("嗡——") */
+    FX_STRONG,         /* 强电流: 深度调制 + 重失真 */
+    FX_RADIO,          /* 对讲机: 300~3200Hz 带通 + 削波 */
+    FX_SPACE,          /* 深空回声: 变低 + 220ms 反馈回声(越来越闷) */
+    FX_ELEC2,          /* 电流音2: 110Hz 调制 + 6Hz 颤音 */
+} tts_fx_t;
+
+static const struct { const char *id; const char *cn; tts_fx_t fx; float pitch; } TTS_VOICES[] = {
+    { "original", "原声",     FX_ORIGINAL, 1.00f },
+    { "metal",    "机械金属", FX_METAL,    1.00f },
+    { "deep",     "电子低沉", FX_DEEP,     0.76f },
+    { "alien",    "赛博外星", FX_ALIEN,    1.22f },
+    { "elec",     "电流音",   FX_ELEC,     1.00f },
+    { "strong",   "强电流",   FX_STRONG,   0.95f },
+    { "radio",    "对讲机",   FX_RADIO,    1.00f },
+    { "space",    "深空回声", FX_SPACE,    0.90f },
+    { "elec2",    "电流音2",  FX_ELEC2,    1.08f },
+};
+#define TTS_VOICE_N (sizeof(TTS_VOICES) / sizeof(TTS_VOICES[0]))
+#define TTS_FS      ((float)RX_SAMPLE_RATE)      /* 播报采样率 24000 */
+#ifndef PI_F
+#define PI_F 3.14159265358979f
+#endif
+static uint8_t s_voice_idx = 0;              /* 当前音色下标(持久化用) */
+
+/* DSP 跨帧状态: 一句话是几十个 60ms 帧连起来的, 相位/滤波/回声必须连续 */
+static struct {
+    float ph1, ph2;          /* 振荡器相位(环调/AM/颤音共用, 各自累加) */
+    float lp1, lp2;          /* 一阶低通状态 */
+    float echo_lp;           /* 回声支路低通 */
+    int16_t *echo;           /* 深空回声环形缓冲(PSRAM, 首次用到才分配) */
+    int      echo_len, echo_wr;
+} s_dsp;
+
+static void dsp_reset(void)
+{
+    s_dsp.ph1 = s_dsp.ph2 = 0;
+    s_dsp.lp1 = s_dsp.lp2 = s_dsp.echo_lp = 0;
+}
+
+/* 软削波: 声音越大越"破", 但不会像硬切那样产生刺耳的爆音 */
+static inline float dsp_sat(float v, float drive)
+{
+    float x = v * drive;
+    if (x >  4.0f) x =  4.0f;
+    if (x < -4.0f) x = -4.0f;
+    return x / (1.0f + fabsf(x));
+}
+
+/* 对一帧 PCM 施加当前音色特效; 返回输出样本数(变调会变)。原声直通。 */
+static size_t tts_apply(int16_t *buf, size_t n)
+{
+    if (s_voice_idx >= TTS_VOICE_N || s_voice_idx == 0) return n;
+
+    const tts_fx_t fx    = TTS_VOICES[s_voice_idx].fx;
+    const float    pitch = TTS_VOICES[s_voice_idx].pitch;
+
+    /* ① 变调重采样(线性插值): 输出帧数 = n/pitch */
+    static int16_t vbuf[RX_FRAME_SAMPLES + 16];
+    size_t on;
+    if (pitch != 1.0f) {
+        on = (size_t)((float)n / pitch + 0.5f);
+        if (on > RX_FRAME_SAMPLES) on = RX_FRAME_SAMPLES;
+        float pos = 0.0f;
+        for (size_t i = 0; i < on; i++) {
+            size_t i0 = (size_t)pos;
+            if (i0 >= n - 1) { vbuf[i] = buf[n - 1]; pos += pitch; continue; }
+            float f = pos - (float)i0;
+            vbuf[i] = (int16_t)((float)buf[i0] + ((float)buf[i0 + 1] - (float)buf[i0]) * f);
+            pos += pitch;
+        }
+    } else {
+        on = n;
+        memcpy(vbuf, buf, n * sizeof(int16_t));
+    }
+
+    /* 深空回声的环形缓冲: 首次用到才分配(~10KB, 放 PSRAM, 内部 RAM 出不起) */
+    if (fx == FX_SPACE && !s_dsp.echo) {
+        s_dsp.echo_len = (int)(TTS_FS * 0.22f);              /* 220ms */
+        s_dsp.echo = heap_caps_malloc((size_t)s_dsp.echo_len * sizeof(int16_t),
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_dsp.echo) memset(s_dsp.echo, 0, (size_t)s_dsp.echo_len * sizeof(int16_t));
+        s_dsp.echo_wr = 0;
+    }
+
+    /* ② 逐样本特效 */
+    for (size_t i = 0; i < on; i++) {
+        float x = (float)vbuf[i] / 32768.0f;
+        float y = x;
+        switch (fx) {
+        case FX_METAL: {                                     /* 机械金属 */
+            float o = sinf(s_dsp.ph1);                       /* 55Hz 双极性环调 */
+            y = dsp_sat(x * o * 0.9f, 1.6f);
+            s_dsp.ph1 += 2.0f * PI_F * 55.0f / TTS_FS;
+            break;
+        }
+        case FX_DEEP: {                                      /* 电子低沉 */
+            s_dsp.lp1 += 0.20f * (x - s_dsp.lp1);            /* ~900Hz 低通 */
+            y = s_dsp.lp1 * 1.15f;
+            break;
+        }
+        case FX_ALIEN: {                                     /* 赛博外星 */
+            float o = sinf(s_dsp.ph1);                       /* 120Hz 环调 */
+            y = dsp_sat(x * 0.45f + x * o * 0.55f, 1.5f);
+            s_dsp.ph1 += 2.0f * PI_F * 120.0f / TTS_FS;
+            break;
+        }
+        case FX_ELEC: {                                      /* 电流音 */
+            float o = 0.5f + 0.5f * sinf(s_dsp.ph1);         /* 50Hz 单极性 AM */
+            y = dsp_sat(x * (0.55f + 0.45f * o), 1.2f);
+            s_dsp.ph1 += 2.0f * PI_F * 50.0f / TTS_FS;
+            break;
+        }
+        case FX_STRONG: {                                    /* 强电流 */
+            float o = 0.5f + 0.5f * sinf(s_dsp.ph1);         /* 60Hz 深调制 */
+            y = dsp_sat(x * (0.15f + 0.85f * o), 3.2f);      /* + 重失真 */
+            s_dsp.ph1 += 2.0f * PI_F * 60.0f / TTS_FS;
+            break;
+        }
+        case FX_RADIO: {                                     /* 对讲机 */
+            s_dsp.lp1 += 0.077f * (x - s_dsp.lp1);           /* 高通 300Hz(原-低通) */
+            float h = x - s_dsp.lp1;
+            s_dsp.lp2 += 0.66f * (h - s_dsp.lp2);            /* 低通 ~3200Hz */
+            y = dsp_sat(s_dsp.lp2 * 1.5f, 1.7f);
+            break;
+        }
+        case FX_SPACE: {                                     /* 深空回声 */
+            s_dsp.lp1 += 0.45f * (x - s_dsp.lp1);            /* 主体略闷 */
+            float dry = s_dsp.lp1 * 0.72f;
+            float wet = 0.0f;
+            if (s_dsp.echo) {
+                wet = (float)s_dsp.echo[s_dsp.echo_wr] / 32768.0f;
+                s_dsp.echo_lp += 0.35f * (wet - s_dsp.echo_lp);  /* 回声越滚越闷 */
+                wet = s_dsp.echo_lp;
+                int16_t fb = (int16_t)(dsp_sat(dry + wet * 0.55f, 1.1f) * 30000.0f);
+                s_dsp.echo[s_dsp.echo_wr] = fb;              /* 反馈回写 */
+                if (++s_dsp.echo_wr >= s_dsp.echo_len) s_dsp.echo_wr = 0;
+            }
+            y = dsp_sat(dry + wet * 0.55f, 1.2f);
+            break;
+        }
+        case FX_ELEC2: {                                     /* 电流音2 */
+            float o  = 0.5f + 0.5f * sinf(s_dsp.ph1);        /* 110Hz 蜂鸣 */
+            float tr = 0.85f + 0.15f * sinf(s_dsp.ph2);      /* 6Hz 颤音 */
+            y = dsp_sat(x * (0.45f + 0.55f * o) * tr, 1.8f);
+            s_dsp.ph1 += 2.0f * PI_F * 110.0f / TTS_FS;
+            s_dsp.ph2 += 2.0f * PI_F * 6.0f   / TTS_FS;
+            break;
+        }
+        default:
+            y = x;
+            break;
+        }
+        if (s_dsp.ph1 > 2.0f * PI_F) s_dsp.ph1 -= 2.0f * PI_F;   /* 防漂移 */
+        if (s_dsp.ph2 > 2.0f * PI_F) s_dsp.ph2 -= 2.0f * PI_F;
+
+        int32_t v = (int32_t)(y * 32767.0f);
+        if (v >  32767) v =  32767;
+        if (v < -32768) v = -32768;
+        vbuf[i] = (int16_t)v;
+    }
+
+    memcpy(buf, vbuf, on * sizeof(int16_t));
+    return on;
+}
+
+bool ai_client_set_tts_voice(const char *name)
+{
+    if (!name || !name[0]) return false;
+    /* ★ 早期版本的音色名继续认(老对话记录/AI 记忆里的说法不至于失效) */
+    static const struct { const char *old, *nw; } ALIAS[] = {
+        { "normal", "original" }, { "cute", "alien" },
+        { "uncle",  "deep" },     { "robot", "metal" },
+        { "正常",   "原声" },     { "萝莉",  "赛博外星" },
+        { "大叔",   "电子低沉" }, { "机器人", "机械金属" },
+    };
+    for (size_t a = 0; a < sizeof(ALIAS) / sizeof(ALIAS[0]); a++) {
+        if (strcasecmp(name, ALIAS[a].old) == 0) { name = ALIAS[a].nw; break; }
+    }
+
+    for (size_t i = 0; i < TTS_VOICE_N; i++) {
+        if (strcasecmp(name, TTS_VOICES[i].id) == 0 ||
+            strstr(TTS_VOICES[i].cn, name) != NULL ||
+            (name[1] == '\0' && name[0] >= '0' && name[0] < '0' + (char)TTS_VOICE_N)) {
+            s_voice_idx = (uint8_t)i;
+            dsp_reset();
+            nvs_handle_t h;
+            if (nvs_open("cfg", NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_u8(h, "tts_voice", s_voice_idx);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            ESP_LOGI(TAG, "播报音色 -> %s", TTS_VOICES[i].cn);
+            return true;
+        }
+    }
+    return false;
+}
+
+const char *ai_client_tts_voice_cn(void)
+{
+    if (s_voice_idx >= TTS_VOICE_N) return "原声";
+    return TTS_VOICES[s_voice_idx].cn;
+}
+
+/* 开机恢复上次选的音色。
+   ★ 旧固件存过 0..3(原声/萝莉/大叔/机器人), 要映射到新表的下标, 否则
+   "存的是萝莉, 恢复成了机械金属"这类错位。 */
+static void tts_voice_load(void)
+{
+    nvs_handle_t h;
+    uint8_t v = 0;
+    if (nvs_open("cfg", NVS_READONLY, &h) == ESP_OK) {
+        nvs_get_u8(h, "tts_voice", &v);
+        nvs_close(h);
+    }
+    /* 旧: 0原声 1萝莉(1.25) 2大叔(0.82) 3机器人(1.50)
+       新: 0原声 1机械 2低沉 3外星 4电流 5强电流 6对讲机 7深空 8电流2 */
+    static const uint8_t OLD_MAP[4] = { 0, 3, 2, 1 };
+    if (v < 4)                v = OLD_MAP[v];
+    if (v < TTS_VOICE_N)      s_voice_idx = v;
+}
+
 static void zx_audio_task(void *arg)
 {
     int err = 0;
@@ -917,6 +1218,17 @@ static void zx_audio_task(void *arg)
     ESP_LOGI(TAG, "音频任务就绪 (Opus 16kHz/%dms, 免触摸VAD=%d)", FRAME_MS, (int)zx.vad_on);
 
     while (1) {
+        /* ★ 跨任务请求的清理: 只能在本任务(读者上下文)做, 见 zx_force_idle 注释。
+           放在挂起检查之前 —— 挂起/断开路径设置的标志在挂起期间也要被消费。 */
+        if (zx.sb_flush_req) {
+            zx.sb_flush_req = false;
+            if (zx.sb) xStreamBufferReset(zx.sb);
+        }
+        if (zx.mic_drain_req) {
+            zx.mic_drain_req = false;
+            mic_drain_backlog();
+        }
+
         /* ---- ★ 音乐互斥: 挂起期间整条 AI 音频链停摆 ----
            不读麦克风(省 I2S/DMA 带宽)、不跑唤醒词(最重的 CPU 开销)、
            不上行编码、也不解码播放 TTS。音乐解码因此能独占这个核。
@@ -928,6 +1240,13 @@ static void zx_audio_task(void *arg)
             }
             vTaskDelay(pdMS_TO_TICKS(50));
             continue;
+        }
+
+        /* ★ 唤醒词引擎重建: 必须由本任务执行 —— 只有本任务会碰引擎,
+           从别的任务 destroy 会和使用中的模型撞车(use-after-free 崩溃)。 */
+        if (zx.ww_restart_req) {
+            zx.ww_restart_req = false;
+            if (zx.ww_ready) wake_word_restart();
         }
 
         /* ---- 播报中: 只解码播放. 不读麦克风, 否则扬声器的声音会把自己触发 ---- */
@@ -989,9 +1308,11 @@ static void zx_audio_task(void *arg)
             int samples = opus_decode(dec, pkt, flen, pcm, RX_FRAME_SAMPLES, 0);
             if (samples > 0) {
                 zx.dec_fail = 0;
+                /* ★ 音色特效(见 TTS_VOICES 说明): DSP 变声后写喇叭 */
+                size_t ns = tts_apply(pcm, (size_t)samples);
                 /* 前 3 帧打印样本数/帧长/电平, 一眼看出"解码成功但内容是空的"
                    还是"压根没收到音频" */
-                size_t wr = speaker_write(pcm, (size_t)samples, 500);
+                size_t wr = speaker_write(pcm, ns, 500);
                 if (speak_frames < 3) {
                     ESP_LOGI(TAG, "解码第%d帧: %d 样本(实际写入%u), 帧长=%d, 电平=%.0f",
                              speak_frames + 1, samples, (unsigned)wr, flen,
@@ -1082,6 +1403,10 @@ static void zx_audio_task(void *arg)
         }
         float rms = rms_of(pcm, n);
         zx.mic_rms = rms;
+
+        /* ★ 喂给「音乐频谱」灯效: 没放歌时对着麦克风说话/外放音乐,
+           8 颗灯照样跳频谱。内部自判(放歌中或非频谱灯效直接返回), 无负担。 */
+        light_mic_pcm(pcm, n);
 
         if (zx.mode == MODE_LISTEN) {
             /* 上行: 先攒够一整帧 960 样本, 再 Opus 编码发二进制帧 */
@@ -1299,8 +1624,10 @@ static void zx_start_ws(void)
         /* MCP tools/list 的回复实测有 2065 字节, 而 Kconfig 默认
            CONFIG_WS_BUFFER_SIZE 只有 1024 —— 缓冲不足时发送会失败并把
            连接写崩(esp_transport_write ... SSL_WRITE_FAILED)。
-           这里给到 8192, 留足余量。 */
-        .buffer_size = 8192,
+           4096 够用且省内部 RAM: 这两个缓冲(rx+tx)在内部 RAM 里, 给到 8192
+           的那阵子正好撞上网易云拉歌单, WS 任务就建不起来了(见 sdkconfig
+           里 SPIRAM_MALLOC_ALWAYSINTERNAL 的注释)。 */
+        .buffer_size = 4096,
         .task_stack = WS_TASK_STACK,
         .reconnect_timeout_ms = 5000,
         .network_timeout_ms = 10000,
@@ -1440,6 +1767,54 @@ static void zx_task(void *arg)
         }
         /* ★ 12 秒就重建, 不要等 45 秒 —— 实测网络中断超过约 30 秒时,
            音乐那条 TCP 也会被 LWIP 重传超时判死。断网窗口越短, 音乐越安全。 */
+        /* ★★★ 音乐模式: 播歌时 AI 对话全部让路, 摸头顶三下暂停即恢复 ★★★
+         *
+         * 让路的是【音频链】(唤醒词/上行/播报全停, 见 ai_client_set_audio_suspended),
+         * 而 WebSocket 必须【保持连接】—— 这里踩过一个坑, 记下来:
+         *   曾试过"音乐期间把 WS 也关掉省内存", 省下的只有 1.7~5.9KB, 但代价是
+         *   暂停后 WS 建不回来(音乐会话还活着, 内部 RAM 最大连续块只剩 1.7KB,
+         *   而 WS 任务要 5~7KB 连续) → 用户摸三下暂停后喊小智【完全没反应】。
+         *   而音乐本身很稳(缓冲 62/64KB、见底 0 次), 根本不需要省这点内存。
+         * 结论: 让路 = 让出 CPU 和喇叭, 不是让出连接。 */
+        /* ★ 顺手把待落盘的网易云登录态写进 NVS。
+           为什么放在这个任务里: 写 flash 会关 cache, 而 zx 任务的栈在内部 RAM
+           (PSRAM 栈的任务做这件事会触发
+            esp_task_stack_is_sane_cache_disabled 断言重启 —— 踩过)。
+           也不另外开任务: 内部 RAM 太紧, 建落盘任务会失败(也踩过),
+           结果就是"登录了但一重启就丢"。 */
+        if (ne_cookie_save_pending()) ne_cookie_save_now();
+
+        /* ★ 用 music_owns_audio() 而不是 music_is_playing()/music_is_active():
+           它精确表示"音乐正在出声、占着喇叭"。暂停后它是 false,
+           于是 AI 立刻恢复(用户摸三下暂停就是为了喊小智)。 */
+        bool mp = music_owns_audio();
+        if (mp && !zx.music_mode) {
+            zx.music_mode = true;
+            ESP_LOGW(TAG, "★ 进入音乐模式: AI 音频链让路(唤醒词/上行/播报全停) [内部RAM=%u]",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            /* ★★ 音乐模式里把 WS 关掉, 内存全让给音乐 ★★
+             * 音频已挂起, 这条连接收不到也发不出任何东西, 却占着 ~40KB 内部
+             * RAM(TLS 上下文 + 收发缓冲 + 任务栈)。实测: 挂着 WS 时内部 RAM
+             * 只剩 251 字节, 拉播放地址直接 "Failed to create socket" →
+             * 整轮播放报废。关掉后退出音乐模式那一拍(下面)会自动重建。
+             * (以前"保持连接"的顾虑是重建会内存搅动 —— 现在是【音乐开始前
+             *  还有余量时】主动关, 时机完全不同, 且销毁流程复用下面的老路。) */
+            if (zx.ws) {
+                void *old = zx.ws;
+                zx.ws = NULL;
+                zx.ws_ready = false;
+                /* 等在途回调走完再销毁(同"彻底重建"的时序, 防 LoadProhibited) */
+                vTaskDelay(pdMS_TO_TICKS(1200));
+                esp_websocket_client_destroy(old);
+                ESP_LOGI(TAG, "音乐模式: WebSocket 已关闭释放内存 [内部RAM=%u]",
+                         (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+            }
+        } else if (!mp && zx.music_mode) {
+            zx.music_mode = false;
+            ESP_LOGI(TAG, "★ 退出音乐模式 → AI 立刻恢复(暂停/放完/摸头顶 3 下) [内部RAM=%u]",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        }
+
         bool need = zx.hard_reconnect || zx.pending_rebuild ||
                     (zx.ws && zx.stuck >= 12 && age_ms > 15000);
 
@@ -1453,7 +1828,9 @@ static void zx_task(void *arg)
          *   184872 music: 流断了
          * 而且播音乐时 AI 音频本来就挂起(用户要的互斥), 这时有连接也没用。
          * 所以只把"要重建"记下来, 等音乐停了下一拍再建。 */
-        if (need && music_is_active()) {
+        /* ★ 闸门同样用 music_owns_audio(): 暂停期间 AI 要能重连
+           (之前用 music_is_active(), 暂停时也不让重建 → 喊小智没反应) */
+        if (need && music_owns_audio()) {
             if (!zx.pending_rebuild) {
                 zx.pending_rebuild = true;
                 ESP_LOGW(TAG, "音乐播放中 → WebSocket 暂不重建(避免内存搅动拖死音乐)");
@@ -1490,9 +1867,25 @@ static void zx_task(void *arg)
             esp_websocket_client_destroy(old);
         }
 
-        if (zx.ws == NULL) {
+        /* ★ 音乐模式下不建 WS(内存留给音乐); 等退出音乐模式那一拍再建 */
+        if (zx.ws == NULL && !zx.music_mode) {
             zx.stuck = 0;
             zx_start_ws();
+            /* ★★ 自愈: 内部堆【碎片化】后 WS 任务栈(5120)可能永远建不起来 ——
+             *    总剩余看着够(11KB+)但最大连续块不够(4KB), 重试一万次也一样。
+             *    实测症状: 日志反复 "Error create websocket task", 网页也失联,
+             *    只能手动断电。连续 5 次失败 → 自动重启, 10 秒满血复活。 */
+            static int ws_fail_cnt;
+            if (zx.ws == NULL) {
+                if (++ws_fail_cnt >= 5) {
+                    ESP_LOGE(TAG, "WS 连续 %d 次建不起来(内部堆碎片化) → 自动重启自愈",
+                             ws_fail_cnt);
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    esp_restart();
+                }
+            } else {
+                ws_fail_cnt = 0;
+            }
             /* ★ 只有"真的建不起来"才动音乐 —— 这是最后手段, 很少走到。
                (zx_start_ws 建失败时 zx.ws 仍为 NULL 并已打过错误日志) */
             if (zx.ws == NULL && music_is_active()) {
@@ -1523,6 +1916,7 @@ void ai_client_init(void)
        这期间会把房间噪声误判成"一直有人在说话", 导致不会自动停止聆听。 */
     zx.noise  = 1500.0f;
     build_identity();
+    tts_voice_load();               /* 恢复上次选的播报音色 */
 
     /* 语音触发方式: 优先用 esp-sr 唤醒词「你好小智」(模型在 flash 的 model 分区);
      * 拿不到模型就回退到能量 VAD(任何说话都会触发, 灵敏度见 config.h 的 VAD_*) */
@@ -1727,8 +2121,7 @@ void ai_client_abort(void)
     cJSON_AddStringToObject(o, "type", "abort");
     if (zx.session[0]) cJSON_AddStringToObject(o, "session_id", zx.session);
     zx_send_json(o);
-    zx.mode = MODE_IDLE;
-    if (zx.sb) xStreamBufferReset(zx.sb);
+    zx_force_idle();            /* 功放 hold 必须放; sb 清理由音频任务做 */
     set_state("就绪");
 }
 
@@ -1743,22 +2136,43 @@ void ai_client_set_audio_suspended(bool suspended)
     if (suspended == zx.audio_suspended) return;
     zx.audio_suspended = suspended;
 
+    static int64_t s_susp_start_us;
+
     if (suspended) {
+        s_susp_start_us = esp_timer_get_time();
         zx.suspend_log = 0;
-        /* 停掉正在进行的聆听/播报, 清空缓冲 —— 否则恢复时会播上一轮的残渣 */
-        zx.mode         = MODE_IDLE;
-        zx.vad_session  = false;
-        zx.tts_draining = false;
-        zx.tts_start_ms = 0;
+        /* 停掉正在进行的聆听/播报, 清空缓冲 —— 否则恢复时会播上一轮的残渣。
+           走 zx_force_idle: 放功放 hold + 挂清缓冲标志(本任务不是音频任务)。 */
+        zx_force_idle();
         zx.cooldown_ms  = 0;
         zx.cont_wait_ms = 0;
         zx.want_listen  = false;
-        if (zx.sb) xStreamBufferReset(zx.sb);
         ESP_LOGW(TAG, "AI 音频挂起 (播放音乐)");
     } else {
-        /* 挂起期间没喂过音频, 唤醒词引擎内部状态是脏的 —— 必须重置,
-           否则恢复后第一句话会被残留状态吃掉, 表现为"刚听完歌喊不出来"。 */
-        if (zx.ww_ready) wake_word_reset();
+        /* ★★★ 挂起后的唤醒词引擎恢复: 看挂了多久 ★★★
+         *
+         * 短挂起(几百毫秒~几秒, 比如一次网易云请求): 清一下累积缓冲就行。
+         * 长挂起(播歌几十秒): 只 reset 是【不够】的 —— 模型内部的特征队列还停在
+         * 暂停前那一刻的旧音频上, 恢复后喂进去的声音在它看来是跳变, 唤醒率掉到
+         * 几乎为 0。用户的感受就是【暂停音乐后, 怎么喊「你好小智」都没反应】
+         * (实测踩到: 仪表全正常 —— 引擎在跑、麦克风有电平、循环 45ms,
+         *  就是不命中)。所以超过 3 秒的长挂起直接重建引擎。 */
+        if (zx.ww_ready) {
+            int64_t gap_us = esp_timer_get_time() - s_susp_start_us;
+            if (gap_us > 3 * 1000 * 1000) {
+                /* ★★ 绝不能在这里直接 wake_word_restart() ★★
+                 * 本函数是从音乐任务 / 网易云任务里调的, 而【音频任务】此刻可能正
+                 * 在 wake_word_feed() 里跑模型。destroy 释放 s_data 的同时那边还在用
+                 * → use-after-free, 实测直接崩:
+                 *   dl_convq_queue_pop ← model_detect_samples ← wake_word_feed
+                 *   Guru Meditation (LoadProhibited) → 设备重启
+                 * 所以只打一个标记, 交给音频任务自己(唯一会碰引擎的任务)重建。 */
+                ESP_LOGW(TAG, "挂起持续 %lldms → 请音频任务重建唤醒词引擎", gap_us / 1000);
+                zx.ww_restart_req = true;
+            } else {
+                wake_word_reset();
+            }
+        }
         zx.audio_suspended = false;
         zx.suspend_log     = 0;
         zx.noise           = 1500.0f;   /* 噪声底重新估计 */

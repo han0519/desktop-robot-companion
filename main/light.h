@@ -12,15 +12,33 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
+/* ================= 8 灯珠环形灯效 =================
+ *
+ * 顺序与 docs/led_preview.html 里的预览完全一致(触摸双击按这个顺序轮换)。
+ * 设计原则(踩过坑, 写下来免得后人乱改):
+ *   · 颜色一律用 HSV 现算, 不存表 —— 8 颗灯算这点量对 CPU 可忽略, 但省 flash
+ *   · 【音乐律动/音乐频谱】的颜色是"绑在位置"上的(音量只决定条多长),
+ *     所以低音量时是青蓝、满音量顶端才出现绿色 —— 这是刻意跟参考产品对齐的
+ *   · 随机类(火焰/星空)需要跨帧状态, 存在 s 里而不是函数里
+ */
 typedef enum {
     LIGHT_OFF = 0,      /* 关灯 */
     LIGHT_MONO,         /* 单色常亮 */
-    LIGHT_BREATHE,      /* 单色呼吸 */
-    LIGHT_GRADIENT,     /* 渐变(颜色沿灯环过渡并缓慢流动) */
-    LIGHT_RAINBOW,      /* 多色呼吸(彩虹分布 + 整体亮度呼吸) */
-    LIGHT_POLICE,       /* 警车爆闪(红蓝交替) */
-    LIGHT_MUSIC,        /* ★ 音乐律动: 灯环跟着音乐电平转(放歌时自动进入) */
+    LIGHT_BREATHE,      /* 单色呼吸 (2.4s) */
+    LIGHT_RAINBOW,      /* 彩虹环 (8 灯均分色相, 缓慢旋转) */
+    LIGHT_RAINBOW_BR,   /* 彩虹呼吸 (彩虹 + 整体亮度呼吸 3.2s) */
+    LIGHT_CHASE,        /* 追光 (亮点沿环跑 + 3 颗拖尾) */
+    LIGHT_TWIN,         /* 双点对撞 (两个亮点相对旋转) */
+    LIGHT_MIRROR,       /* 镜像呼吸 (从 0 号向两侧对称点亮) */
+    LIGHT_PULSE,        /* 脉冲扩散 (一圈光波向外扩) */
+    LIGHT_FIRE,         /* 火焰 (橙红随机跳动) */
+    LIGHT_STARRY,       /* 星空闪烁 (随机点亮再慢慢淡出) */
+    LIGHT_LEVEL,        /* 电平环 (跟音量填格, 不跳) */
+    LIGHT_MUSIC,        /* ★ 音乐律动 (放歌自动进: 环形音频条 + 峰值点) */
+    LIGHT_MUSIC_BANDS,  /* ★ 音乐频谱 (8 段: 每颗灯管一个频段) */
+    LIGHT_POLICE,       /* 警车爆闪 (红蓝交替) */
     LIGHT_COUNT
 } light_effect_t;
 
@@ -42,6 +60,9 @@ int  light_get_brightness(void);
 
 /* ---- 主色(单色/呼吸用) ---- */
 void light_set_color(uint8_t r, uint8_t g, uint8_t b);
+/* 只改主色、【不】切灯效 —— light_set_color 会强制切到单色, 配网结束要
+ * 恢复原状态时(先恢复主色再恢复效果)必须用这个 */
+void light_set_rgb(uint8_t r, uint8_t g, uint8_t b);
 void light_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
 
 /* ---- 音乐律动(LIGHT_MUSIC) ----
@@ -50,7 +71,12 @@ void light_get_color(uint8_t *r, uint8_t *g, uint8_t *b);
  * 看起来是跟着节奏弹, 而不是频闪。 */
 void light_music_start(void);
 void light_music_stop(void);
-void light_music_level(float level01);   /* 0..1, 音乐解码循环里每帧调用 */
+void light_music_level(float level01);   /* 0..1, 只喂电平(旧接口) */
+/* ★ 推荐用这个: 直接把解码后的 PCM 喂进来, 里面除了算电平, 还会做 8 段
+   "滤波器组"分析(低/高各段能量), 音乐频谱灯效就靠它。每帧调用开销可忽略。 */
+void light_music_pcm(const int16_t *pcm, size_t frames);
+/* 麦克风 PCM 喂频谱: 没放歌时「音乐频谱」也能跟着环境声音跳(内部自判, 无开销) */
+void light_mic_pcm(const int16_t *pcm, size_t frames);
 
 /* 供网页/串口显示: 当前灯效的一行中文描述 */
 const char *light_state_str(void);

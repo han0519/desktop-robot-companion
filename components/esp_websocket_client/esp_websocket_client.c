@@ -17,6 +17,7 @@
 #include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_timer.h"
 #include "esp_tls_crypto.h"
 #include "esp_system.h"
@@ -175,14 +176,21 @@ static esp_err_t esp_websocket_new_buf(esp_websocket_client_handle_t client, boo
             free(client->tx_buffer);
         }
 
-        client->tx_buffer = calloc(1, client->buffer_size);
+        /* ★ 收发缓冲放 PSRAM(本项目实测踩坑):
+         *   这两个缓冲原来用 calloc(内部 RAM), 大小正好卡在"小于阈值必须内部"
+         *   的线上, 各吃掉最大连续块 4KB —— 之后 WebSocket 任务自己的栈
+         *   (5120, 必须内部 RAM)就分配不出来了, 报 "Error create websocket task",
+         *   AI 长时间连不上, 用户喊「你好小智」完全没反应。
+         *   放 PSRAM(8MB)后内部 RAM 不再被蚕食; 音频帧每条只有几百字节,
+         *   PSRAM 拷贝的开销可以忽略。 free() 在 IDF 里通用, 不用改。 */
+        client->tx_buffer = heap_caps_calloc(1, client->buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         ESP_WS_CLIENT_MEM_CHECK(TAG, client->tx_buffer, return ESP_ERR_NO_MEM);
     } else {
         if (client->rx_buffer) {
             free(client->rx_buffer);
         }
 
-        client->rx_buffer = calloc(1, client->buffer_size);
+        client->rx_buffer = heap_caps_calloc(1, client->buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         ESP_WS_CLIENT_MEM_CHECK(TAG, client->rx_buffer, return ESP_ERR_NO_MEM);
     }
 #endif
@@ -895,11 +903,14 @@ esp_websocket_client_handle_t esp_websocket_client_init(const esp_websocket_clie
     client->errormsg_buffer = NULL;
     client->errormsg_size = 0;
 #ifndef CONFIG_ESP_WS_CLIENT_ENABLE_DYNAMIC_BUFFER
-    client->rx_buffer = malloc(buffer_size);
+    /* ★ 这才是真正生效的分配点(前面 L179/186 那处是动态缓冲模式用的)。
+     *   改成 PSRAM 的原因见上面 tx_buffer 那处的注释: 两个 4096 缓冲正好把
+     *   内部 RAM 最大连续块从 8192 压到 3584, 导致 5120 的任务栈分配失败。 */
+    client->rx_buffer = heap_caps_calloc(1, buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ESP_WS_CLIENT_MEM_CHECK(TAG, client->rx_buffer, {
         goto _websocket_init_fail;
     });
-    client->tx_buffer = malloc(buffer_size);
+    client->tx_buffer = heap_caps_calloc(1, buffer_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     ESP_WS_CLIENT_MEM_CHECK(TAG, client->tx_buffer, {
         goto _websocket_init_fail;
     });
@@ -1474,7 +1485,10 @@ esp_err_t esp_websocket_client_start(esp_websocket_client_handle_t client)
     xEventGroupClearBits(client->status_bits, STOPPED_BIT | CLOSE_FRAME_SENT_BIT | REQUESTED_STOP_BIT | WAKEUP_BIT);
     if (xTaskCreatePinnedToCore(esp_websocket_client_task, client->config->task_name ? client->config->task_name : "websocket_task",
                                 client->config->task_stack, client, client->config->task_prio, &client->task_handle, client->config->task_core_id) != pdTRUE) {
-        ESP_LOGE(TAG, "Error create websocket task");
+        ESP_LOGE(TAG, "Error create websocket task (请求栈=%u, 内部最大连续=%u, 内部剩余=%u)",
+                 (unsigned)client->config->task_stack,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         xEventGroupSetBits(client->status_bits, STOPPED_BIT);
         return ESP_FAIL;
     }

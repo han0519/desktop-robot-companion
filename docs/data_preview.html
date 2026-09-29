@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>喵伴 · 数据页预览（128×64 OLED）</title>
+<style>
+  :root{ --bg:#0b1020; --card:#141a2e; --card2:#1b2340; --line:#26304f;
+         --tx:#e8f0ff; --tx2:#93a0c4; --acc:#00d4ff; --oled:#9fe8ff; }
+  *{box-sizing:border-box}
+  body{margin:0;background:
+        radial-gradient(900px 600px at 12% -10%, #17224a 0%, transparent 60%),
+        radial-gradient(700px 500px at 100% 0%, #241a4a 0%, transparent 55%),
+        var(--bg);
+      color:var(--tx);font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",system-ui,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 20px 70px}
+  h1{margin:0 0 6px;font-size:22px}
+  h1 small{font-weight:400;font-size:13px;color:var(--tx2);margin-left:10px}
+  .sub{color:var(--tx2);font-size:13px;margin-bottom:20px}
+  .sub b{color:var(--acc)}
+  .top{display:grid;grid-template-columns:auto minmax(300px,1fr);gap:26px;align-items:start}
+  @media (max-width:860px){.top{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:16px;padding:16px}
+  .device{display:flex;flex-direction:column;align-items:center;gap:14px}
+  .bezel{background:#05070f;border:10px solid #1a2138;border-radius:18px;padding:14px;box-shadow:0 14px 40px #0009, inset 0 0 24px #000}
+  canvas.screen{display:block;image-rendering:pixelated;border-radius:4px}
+  .btnrow{display:flex;gap:10px;align-items:center}
+  .btn{border:1px solid var(--line);background:#101733;color:var(--tx);border-radius:10px;padding:9px 16px;cursor:pointer;font-size:13px}
+  .btn:hover{border-color:#39507f}
+  .btn:active{transform:translateY(1px)}
+  .btn.boot{border-color:#3d5a7f;background:#12213a}
+  .lab{font-size:12px;color:var(--tx2);text-align:center}
+  .hint{color:var(--tx2);font-size:12px;max-width:520px;text-align:center}
+  .ctl label{display:flex;justify-content:space-between;font-size:12.5px;color:var(--tx2);margin:12px 0 4px}
+  .ctl label b{color:var(--acc)}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .sw{display:flex;align-items:center;gap:6px;color:var(--tx2);font-size:12.5px;cursor:pointer;margin-top:10px}
+  .secttl{margin:28px 0 12px;font-size:15px;color:var(--tx2);display:flex;align-items:center;gap:10px}
+  .secttl:after{content:"";flex:1;height:1px;background:var(--line)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+  .tile{background:linear-gradient(180deg,var(--card2),var(--card));border:1px solid var(--line);border-radius:14px;padding:12px;text-align:center}
+  .tile canvas{width:100%;height:auto;image-rendering:pixelated}
+  .tile .nm{margin-top:6px;font-size:13px}
+  table.params{width:100%;border-collapse:collapse;font-size:12.5px}
+  table.params td,table.params th{border-bottom:1px solid var(--line);padding:7px 6px;text-align:left;vertical-align:top}
+  table.params th{color:var(--tx2);font-weight:500}
+  .foot{margin-top:22px;color:var(--tx2);font-size:12px}
+  .on{outline:2px solid var(--acc);border-radius:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>喵伴 · 数据页预览<small>SSD1305 · 128×64 单色 OLED</small></h1>
+  <div class="sub">
+    按 <b>BOOT</b>：表情页 → 数据页（时间 + 温湿度，实时刷新）→ 再按回表情页。
+    下面这块就是 <b>128×64</b> 按像素画的，设备上效果与此一致（左边是真机 1:1 视觉，右边按钮模拟 BOOT）。
+    <b style="color:#ffd479">注意</b>：BOOT 现在是「切换表情」，改后短按变成「切数据页」，表情切换仍可用网页/AI。
+  </div>
+
+  <div class="top">
+    <div class="card device">
+      <div class="bezel"><canvas id="scr" class="screen" width="512" height="256"></canvas></div>
+      <div class="btnrow">
+        <button class="btn boot" id="boot">BOOT（短按：切换页面）</button>
+        <button class="btn" id="pg">手动切到：<span id="pgn">数据页</span></button>
+      </div>
+      <div class="lab" id="state">当前页面：数据页 · 数据页每秒刷新时间 / 每 2 秒刷新温湿度</div>
+      <div class="hint">OLED 是单色（发光像素 = 前景色）。为模拟 OLED 观感，预览里做了轻微辉光；
+        实机是纯白/蓝像素，无灰度。</div>
+    </div>
+
+    <div class="card ctl">
+      <label>数据页样式 <b><span id="styv">A · 紧凑三行</span></b></label>
+      <div class="btnrow" id="styles"></div>
+
+      <label>时间来源 <b><span id="srcv">本机真实时钟</span></b></label>
+      <div class="sw"><input type="checkbox" id="realtm" checked> 跟随电脑时间（设备端将用 NTP 对时）</div>
+
+      <label>温度 <b><span id="tv">26.9</span> °C</b></label>
+      <input type="range" id="temp" min="0" max="45" step="0.1" value="26.9">
+
+      <label>湿度 <b><span id="hv">65</span> %</b></label>
+      <input type="range" id="hum" min="0" max="100" step="1" value="65">
+
+      <label>动画速度 <b><span id="spv">1.0</span>×</b></label>
+      <input type="range" id="sp" min="10" max="300" value="100">
+
+      <div class="sw"><input type="checkbox" id="wig" checked> 模拟 DHT11 实时波动（±0.3°C / ±2%，设备端 2 秒读一次）</div>
+      <div class="sw"><input type="checkbox" id="sec" checked> 时间显示秒（不勾则显示 HH:MM，字号更大）</div>
+      <div class="sw"><input type="checkbox" id="inv"> 反色预览（深底亮字 ↔ 亮底深字）</div>
+    </div>
+  </div>
+
+  <div class="secttl">全部样式并排对比（128×64 原始比例，点选即用）</div>
+  <div class="grid" id="tiles"></div>
+
+  <div class="secttl">设备端实现要点（确认后照做）</div>
+  <div class="card">
+    <table class="params">
+      <tr><th style="width:150px">时间</th><td>新增 SNTP 对时（连上 WiFi 后同步，时区 Asia/Shanghai，掉电重连自动补）。OLED 上每秒刷新。</td></tr>
+      <tr><th>温湿度</th><td>DHT11 现有任务已在读（约 2 秒一次），数据页直接取 s_state.env，env_valid=false 时显示 "--"。实时刷新 = 屏幕每秒重画，温湿度值随后台读取更新。</td></tr>
+      <tr><th>按键</th><td>BOOT 短按：表情页 ↔ 数据页 切换（新增一个全局页面状态）。长按行为保留。表情切换改由网页/AI 驱动。</td></tr>
+      <tr><th>绘制</th><td>整页单色绘制，点阵字体；带一个小的 WiFi 状态角标（右上角，联网才显示）。</td></tr>
+    </table>
+    <div class="foot">如果布局/字号/要显示的内容想调整（比如加 IP、天气、表情名），先说，我在预览里改好再进设备。</div>
+  </div>
+</div>
+
+<script>
+/* ============ 128×64 单色 OLED 模拟 ============ */
+const W = 128, H = 64;
+const SCALE = 4;                       // 主画布放大倍数
+let page = 1;                          // 0=表情页 1=数据页
+let speed = 1.0, simT = 0, last = performance.now();
+const P = { wig:true, showSec:true, inv:false, realtm:true, temp:26.9, hum:65 };
+let px = [];
+
+/* 像素字体（5x7 基础字形，按需取用；中文用自绘点阵：温/湿/周几） */
+const F = {
+ '0':["01110","10001","10011","10101","11001","10001","01110"],
+ '1':["00100","01100","00100","00100","00100","00100","01110"],
+ '2':["01110","10001","00001","00010","00100","01000","11111"],
+ '3':["11111","00010","00100","00010","00001","10001","01110"],
+ '4':["00010","00110","01010","10010","11111","00010","00010"],
+ '5':["11111","10000","11110","00001","00001","10001","01110"],
+ '6':["00110","01000","10000","11110","10001","10001","01110"],
+ '7':["11111","00001","00010","00100","01000","01000","01000"],
+ '8':["01110","10001","10001","01110","10001","10001","01110"],
+ '9':["01110","10001","10001","01111","00001","00010","01100"],
+ ':':["00000","00100","00000","00000","00000","00100","00000"],
+ '-':["00000","00000","00000","11111","00000","00000","00000"],
+ '.':["00000","00000","00000","00000","00000","00110","00110"],
+ 'C':["01110","10001","10000","10000","10000","10001","01110"],
+ '%':["11001","11010","00010","00100","01000","01011","10011"],
+ ' ':["00000","00000","00000","00000","00000","00000","00000"],
+};
+const CN = {
+  '温':['................','..#...#######...','...#..#.....#...','...#..#.....#...','#.....#######...','.#....#.....#...','.#....#.....#...','...#..#######...','...#............','..#..#########..','###..#..#.#..#..','..#..#..#.#..#..','..#..#..#.#..#..','..#..#..#.#..#..','..#.###########.','................'],
+  '湿':['................','..#..########...','...#.#......#...','...#.#......#...','#....########...','.#...#......#...','.#...#......#...','...#.########...','...#...#..#.....','..#....#..#.....','###.#..#..#..#..','..#..#.#..#.#...','..#...##..##....','..#....#..#.....','..#.###########.','................'],
+  '周':['....###########.','....#....#....#.','....#....#....#.','....#.#######.#.','....#....#....#.','....#....#....#.','....###########.','....#.........#.','....#..#####..#.','....#..#...#..#.','....#..#...#..#.','....#..#####..#.','...#..........#.','...#........#.#.','..#..........#..','................'],
+  '日':['....#########...','....#.......#...','....#.......#...','....#.......#...','....#.......#...','....#.......#...','....#########...','....#.......#...','....#.......#...','....#.......#...','....#.......#...','....#.......#...','....#.......#...','....#########...','....#.......#...','................'],
+  '一':['................','................','................','................','................','................','................','................','###############.','................','................','................','................','................','................','................'],
+  '二':['................','................','................','..###########...','................','................','................','................','................','................','................','................','###############.','................','................','................'],
+  '三':['................','................','.#############..','................','................','................','................','..###########...','................','................','................','................','................','###############.','................','................'],
+  '四':['................','................','..#############.','..#...#...#...#.','..#...#...#...#.','..#...#...#...#.','..#...#...#...#.','..#...#...#...#.','..#..#....#...#.','..#..#.....####.','..#.#.........#.','..##..........#.','..#...........#.','..#############.','..#...........#.','................'],
+  '五':['................','.#############..','......#.........','......#.........','......#.........','......#.........','..##########....','.....#.....#....','.....#.....#....','.....#.....#....','.....#.....#....','....#......#....','....#......#....','....#......#....','###############.','................'],
+  '六':['......#.........','.......#........','........#.......','........#.......','................','###############.','................','................','.....#...#......','.....#....#.....','....#......#....','....#.......#...','...#........#...','..#..........#..','.#...........#..','................'],
+};
+const WEEK = ['日','一','二','三','四','五','六'];
+
+function textPx(str, x, y, scale, px2){
+  /* 把字符串画到像素缓冲 */
+  let cx = x;
+  for (const ch of str){
+    if (CN[ch]){
+      const g = CN[ch];
+      for (let r=0;r<16;r++) for (let c=0;c<16;c++)
+        if (g[r][c]==='#') setP(px2, cx+c*scale, y+r*scale, scale);
+      cx += 17*scale;
+    } else {
+      const g = F[ch] || F[' '];
+      for (let r=0;r<7;r++) for (let c=0;c<5;c++)
+        if (g[r][c]==='1') setP(px2, cx+c*scale, y+r*scale, scale);
+      cx += 6*scale;
+    }
+  }
+  return cx - x;
+}
+function textW(str, scale){
+  let w = 0;
+  for (const ch of str) w += (CN[ch] ? 17 : 6) * scale;
+  return w;
+}
+function setP(buf, x, y, s){
+  for (let dy=0; dy<s; dy++) for (let dx=0; dx<s; dx++){
+    const xx = x+dx, yy = y+dy;
+    if (xx>=0 && xx<W && yy>=0 && yy<H) buf[yy*W+xx] = 1;
+  }
+}
+function rect(buf, x, y, w, h){
+  for (let i=0;i<w;i++){ setP(buf,x+i,y,1); setP(buf,x+i,y+h-1,1); }
+  for (let j=0;j<h;j++){ setP(buf,x,y+j,1); setP(buf,x+w-1,y+j,1); }
+}
+
+/* ---------- 数据页: 5 种样式 ---------- */
+function dt(){
+  const now = new Date(Date.now() + simT*1000);
+  const pad = n => String(n).padStart(2,'0');
+  return {
+    dateStr: `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`,
+    week: '周' + WEEK[now.getDay()],
+    hh: pad(now.getHours()), mm: pad(now.getMinutes()), ss: pad(now.getSeconds()),
+  };
+}
+
+/* 样式 A: 紧凑三行(日期/大时间/温湿) —— 你确认过的那版 */
+function drawDataA(buf, t){
+  const d = dt();
+  textPx(d.dateStr, 2, 5, 1, buf);
+  textPx(d.week, 128 - textW(d.week,1) - 1, 0, 1, buf);
+  for (let x=2;x<126;x++) buf[17*W+x] = 1;
+  const tstr = P.showSec ? `${d.hh}:${d.mm}:${d.ss}` : `${d.hh}:${d.mm}`;
+  textPx(tstr, Math.floor((128-textW(tstr,2))/2), 21, 2, buf);
+  textPx('温', 2, 42, 1, buf);
+  textPx(P.temp.toFixed(1), 21, 43, 2, buf);
+  textPx('湿', 72, 42, 1, buf);
+  textPx(Math.round(P.hum)+'%', 91, 43, 2, buf);
+  if (Math.floor(t*2)%2===0){ setP(buf,124,60,1); setP(buf,125,60,1); setP(buf,124,61,1); setP(buf,125,61,1); }
+}
+
+/* 样式 B: 大时钟(HH:MM 3 倍) + 秒 + 底部温湿 */
+function drawDataB(buf, t){
+  const d = dt();
+  textPx(d.dateStr, 2, 2, 1, buf);
+  textPx(d.week, 128 - textW(d.week,1) - 1, 0, 1, buf);
+  for (let x=2;x<126;x++) buf[15*W+x] = 1;
+  const tstr = `${d.hh}:${d.mm}`;
+  textPx(tstr, Math.floor((128-textW(tstr,3))/2), 19, 3, buf);
+  textPx(d.ss, 128 - textW(d.ss,1) - 2, 36, 1, buf);
+  textPx('温', 2, 48, 1, buf);
+  textPx(P.temp.toFixed(1), 21, 49, 2, buf);
+  textPx('湿', 72, 48, 1, buf);
+  textPx(Math.round(P.hum)+'%', 91, 49, 2, buf);
+}
+
+/* 样式 C: 仪表盘三格(边框分割) */
+function drawDataC(buf, t){
+  const d = dt();
+  rect(buf, 0,0,128,31);
+  textPx(`${d.hh}:${d.mm}`, 3, 4, 2, buf);
+  textPx(d.dateStr, 3, 22, 1, buf);
+  textPx(d.week, 94, 7, 1, buf);
+  rect(buf, 0,33,63,31);
+  textPx('温', 3, 35, 1, buf);
+  textPx(P.temp.toFixed(1), 3, 49, 2, buf);
+  rect(buf, 65,33,63,31);
+  textPx('湿', 68, 35, 1, buf);
+  textPx(Math.round(P.hum)+'%', 68, 49, 2, buf);
+}
+
+/* 样式 D: 环境监控(时间在顶, 温湿各带一条进度条) */
+function bar(buf, x, y, w, h, frac){
+  rect(buf, x, y, w, h);
+  const fw = Math.round((w-2) * Math.max(0, Math.min(1, frac)));
+  for (let j=1;j<h-1;j++) for (let i=0;i<fw;i++) setP(buf, x+1+i, y+j, 1);
+}
+function drawDataD(buf, t){
+  const d = dt();
+  textPx(d.dateStr, 2, 1, 1, buf);
+  const tstr = `${d.hh}:${d.mm}:${d.ss}`;
+  textPx(tstr, 128 - textW(tstr,1) - 2, 1, 1, buf);
+  textPx('温', 2, 12, 1, buf);
+  textPx(P.temp.toFixed(1)+'C', 21, 13, 2, buf);
+  bar(buf, 2, 31, 124, 7, P.temp/45);
+  textPx('湿', 2, 41, 1, buf);
+  textPx(Math.round(P.hum)+'%', 21, 42, 2, buf);
+  bar(buf, 2, 58, 124, 6, P.hum/100);
+}
+
+/* 样式 E: 极简居中(大时钟 + 一行小温湿) */
+function drawDataE(buf, t){
+  const d = dt();
+  const tstr = `${d.hh}:${d.mm}`;
+  const tx = Math.floor((128-textW(tstr,3))/2);
+  textPx(tstr, tx, 2, 3, buf);
+  textPx(d.ss, tx + textW(tstr,3) + 3, 16, 1, buf);
+  textPx(d.dateStr, Math.floor((128-textW(d.dateStr,1))/2), 28, 1, buf);
+  textPx('温', 21, 46, 1, buf);
+  textPx(P.temp.toFixed(1), 39, 47, 1, buf);
+  textPx('湿', 71, 46, 1, buf);
+  textPx(Math.round(P.hum)+'%', 89, 47, 1, buf);
+  if (Math.floor(t*2)%2===0){ setP(buf,63,62,1); setP(buf,64,62,1); }
+}
+
+const STYLES = [
+  {id:'A', f:drawDataA, nm:'A · 紧凑三行'},
+  {id:'B', f:drawDataB, nm:'B · 大时钟'},
+  {id:'C', f:drawDataC, nm:'C · 仪表盘'},
+  {id:'D', f:drawDataD, nm:'D · 环境监控'},
+  {id:'E', f:drawDataE, nm:'E · 极简居中'},
+];
+let style = 'A';
+function drawPage(buf, t){ return STYLES.find(s=>s.id===style).f(buf,t); }
+
+/* ---------- 表情页(现有页面的近似) ---------- */
+function drawFace(buf, t){
+  /* 两只眼睛 + 偶尔眨眼(近似现有表情, 实机为已实现的 face 模块) */
+  const blink = (Math.floor(t/3.2)===0 && (t%3.2)<0.15);
+  function eye(cx, cy){
+    const rx = 9, ry = blink ? 1 : 8;
+    for (let y=-ry;y<=ry;y++) for (let x=-rx;x<=rx;x++){
+      const d = (x*x)/(rx*rx) + (y*y)/(ry*ry);
+      if (d <= 1.15 && d >= 0.30) setP(buf, cx+x, cy+y, 1);
+      if (d < 0.30) setP(buf, cx+x, cy+y, 1);
+    }
+  }
+  eye(40, 30); eye(88, 30);
+  /* 小嘴: 微笑弧 */
+  for (let x=-10;x<=10;x++){
+    const y = 46 + Math.round(0.012*x*x);
+    setP(buf, 64+x, y, 1);
+  }
+  /* 顶部状态条 */
+  for (let x=2;x<126;x++) buf[2*W+x] = 1;
+}
+
+/* ---------- 渲染 ---------- */
+function render(cv, buf, scale){
+  const g = cv.getContext('2d');
+  const w = cv.width, h = cv.height;
+  g.fillStyle = P.inv ? '#cfe9ff' : '#04070e';
+  g.fillRect(0,0,w,h);
+  /* OLED 辉光 */
+  g.save();
+  for (let y=0;y<H;y++) for (let x=0;x<W;x++){
+    if (buf[y*W+x]){
+      g.fillStyle = P.inv ? '#0b1020' : '#9fe8ff';
+      g.shadowColor = P.inv ? 'transparent' : '#9fe8ff';
+      g.shadowBlur = 3;
+      g.fillRect(x*scale, y*scale, scale, scale);
+    }
+  }
+  g.restore();
+}
+
+/* ---------- 交互 ---------- */
+const big = document.getElementById('scr');
+let buf = new Uint8Array(W*H);
+function tick(now){
+  const dt = Math.min(100, now-last); last = now;
+  simT += dt/1000*speed;
+  /* 模拟 DHT11 波动 */
+  if (P.wig){
+    P.temp = (+document.getElementById('temp').value) + Math.sin(simT*0.35)*0.3;
+    P.hum  = (+document.getElementById('hum').value)  + Math.sin(simT*0.22+2)*2;
+    document.getElementById('tv').textContent = P.temp.toFixed(1);
+    document.getElementById('hv').textContent = Math.round(P.hum);
+  } else {
+    P.temp = +document.getElementById('temp').value;
+    P.hum  = +document.getElementById('hum').value;
+  }
+  buf = new Uint8Array(W*H);
+  (page===1 ? drawPage : drawFace)(buf, simT);
+  render(big, buf, SCALE);
+  /* 并排对比: 每个样式一块 + 表情页 */
+  for (const tl of tiles){
+    const b = new Uint8Array(W*H);
+    (tl.fx==='face' ? drawFace : STYLES.find(s=>s.id===tl.fx).f)(b, simT + tl.off);
+    render(tl.cv, b, 3);
+  }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+/* 样式按钮 + 预览块 */
+const tiles = [];
+const styBox = document.getElementById('styles');
+const tileBox = document.getElementById('tiles');
+STYLES.forEach(s=>{
+  const b = document.createElement('button');
+  b.className = 'btn'; b.textContent = s.nm;
+  b.onclick = ()=>{ style = s.id;
+    document.getElementById('styv').textContent = s.nm;
+    styBox.querySelectorAll('.btn').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on'); };
+  styBox.appendChild(b);
+  const t = document.createElement('div');
+  t.className = 'tile';
+  t.innerHTML = `<canvas width="384" height="192"></canvas><div class="nm">${s.nm}</div>`;
+  t.onclick = ()=> b.onclick();
+  tileBox.appendChild(t);
+  tiles.push({fx:s.id, cv:t.querySelector('canvas'), off:Math.random()*3});
+});
+{ /* 表情页块 */
+  const t = document.createElement('div');
+  t.className = 'tile';
+  t.innerHTML = `<canvas width="384" height="192"></canvas><div class="nm">表情页（现有，BOOT 返回这里）</div>`;
+  tileBox.appendChild(t);
+  tiles.push({fx:'face', cv:t.querySelector('canvas'), off:0});
+}
+styBox.querySelector('.btn').classList.add('on');
+
+document.getElementById('boot').onclick = ()=>{
+  page = page===1 ? 0 : 1;
+  document.getElementById('pgn').textContent = page===1 ? '表情页' : '数据页';
+  document.getElementById('state').textContent =
+    '当前页面：' + (page===1 ? '数据页 · 时间每秒刷新 / 温湿度每 2 秒刷新(跟随 DHT11)'
+                             : '表情页（现有 face 模块）');
+};
+document.getElementById('pg').onclick = ()=> document.getElementById('boot').onclick();
+document.getElementById('temp').oninput = e => { if(!P.wig){ P.temp=+e.target.value; document.getElementById('tv').textContent=P.temp.toFixed(1);} };
+document.getElementById('hum').oninput  = e => { if(!P.wig){ P.hum=+e.target.value;  document.getElementById('hv').textContent=Math.round(P.hum);} };
+document.getElementById('sp').oninput   = e => { speed = e.target.value/100; document.getElementById('spv').textContent = speed.toFixed(1); };
+document.getElementById('wig').onchange = e => P.wig = e.target.checked;
+document.getElementById('sec').onchange = e => P.showSec = e.target.checked;
+document.getElementById('inv').onchange = e => P.inv = e.target.checked;
+document.getElementById('realtm').onchange = e => {
+  P.realtm = e.target.checked;
+  document.getElementById('srcv').textContent = P.realtm ? '本机真实时钟' : '已暂停(演示用)';
+};
+</script>
+</body>
+</html>

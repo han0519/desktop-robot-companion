@@ -43,6 +43,7 @@ static uint32_t s_last_write_ms = 0;
  *
  * 所以播音乐时调 speaker_set_hold(true) 把功放钉住, 结束再放开。 */
 static bool     s_hold = false;
+static volatile bool s_writing = false;    /* 正在写数据(供空闲任务判断, 见 speaker_write) */
 
 static void apply_sd(void)
 {
@@ -101,7 +102,10 @@ static void speaker_idle_task(void *arg)
     while (1) {
         uint32_t now = now_ms();
         /* s_hold 期间绝不关断(播在线音乐时 speaker_write 会阻塞很久) */
-        bool want = s_hold || ((now - s_last_write_ms) < SPK_IDLE_MUTE_MS);
+        /* s_writing: 正在写数据(DMA 满时写入会阻塞几百 ms, 但那是"正在播")
+           s_hold:    调用方显式要求钉住(短促的语音播报用, 帧间空档较大)
+           否则按"最后一次写完 120ms 内仍算忙"来判断 */
+        bool want = s_writing || s_hold || ((now - s_last_write_ms) < SPK_IDLE_MUTE_MS);
         if (want != s_amp_on) {
             s_amp_on = want;
             apply_sd();
@@ -187,6 +191,13 @@ void speaker_start(void)
 size_t speaker_write(const int16_t *buf, size_t sample_count, int timeout_ms)
 {
     if (!s_tx_chan || !buf || s_muted) return 0;
+    /* ★ 标记"正在写数据": 空闲任务看到它就不会关功放。
+       为什么需要: i2s_channel_write 在 DMA 满时会阻塞几百毫秒, 期间
+       s_last_write_ms 一直不更新, 空闲任务会误判"空闲"而在播放中关掉功放
+       (声音断一块)。以前是靠"整首歌期间 speaker_set_hold(true)"绕过去的,
+       但那等于让功放【整首歌常开】—— 杜邦线/WiFi/舵机的串扰会被一直放大,
+       就是那个"持续性兹拉声"。现在只在真正写数据的瞬间保持开启, 更干净。 */
+    s_writing = true;
     /* 兜底: 通道没使能的话 i2s_channel_write 一个字节都写不进去 */
     if (!s_started) speaker_start();
     if (!s_started) return 0;
@@ -247,6 +258,7 @@ size_t speaker_write(const int16_t *buf, size_t sample_count, int timeout_ms)
         ESP_LOGW(TAG, "i2s write 失败: %s (写入 %u 字节)",
                  esp_err_to_name(r), (unsigned)bytes_written);
     }
+    s_writing = false;
     return bytes_written / sizeof(int16_t);
 }
 

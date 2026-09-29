@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 /*
  * web_page.h — 设备自带控制台 (配网完成后 http://<设备IP>/ 打开)
@@ -35,7 +35,7 @@ static const char *WEB_PAGE = R"HTML(
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f0f1a">
-<title>喵伴控制台</title>
+<title>小纸壳控制台</title>
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f0f1a;color:#eee;margin:0;padding:0 14px 34px;max-width:620px;margin:0 auto}
@@ -90,7 +90,12 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
 .tip{font-size:11.5px;color:#6b76a0;line-height:1.55;margin-top:6px}
 .chip{display:inline-block;padding:3px 9px;background:#16213e;border:1px solid #2a2a44;border-radius:20px;font-size:11px;color:#8b95bb;margin:0 4px 4px 0;cursor:pointer}
 .chip:active{background:#00d4ff;color:#001018}
-.mlist{margin-top:9px;max-height:270px;overflow-y:auto}
+/* 列表盒子: 以前只有 270px 高, 歌单多的时候看着像"只有 20 个"(其实能滚) ——
+   改成按屏幕比例给高度, 并显式提示可以滑动 */
+.mlist{margin-top:9px;max-height:min(46vh,380px);overflow-y:auto;-webkit-overflow-scrolling:touch;
+       border:1px solid #232c4a;border-radius:8px;padding:3px}
+.mlist::-webkit-scrollbar{width:5px}
+.mlist::-webkit-scrollbar-thumb{background:#2f3a63;border-radius:3px}
 .mitem{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#16213e;border:1px solid #2a2a44;border-radius:8px;margin-bottom:5px;cursor:pointer;font-size:13px;transition:.15s}
 .mitem:active{transform:scale(.98)}
 .mitem.cur{border-color:#00d4ff;background:#0d2b3a}
@@ -120,6 +125,12 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
   font-size:15px;color:#00d4ff;font-weight:600}
 .tile .tn{font-size:12px;color:#ccd}
 .tile .ts{font-size:10px;color:#6b76a0;margin-top:3px;height:12px;overflow:hidden}
+/* 最后一行只有 1 个格子时会留空白 —— 长条版横向铺满整行 */
+.tile.wide{grid-column:1 / -1;flex-direction:row;align-items:center;gap:12px;
+           padding:10px 16px;text-align:left;justify-content:flex-start}
+.tile.wide .ic{margin:0}
+.tile.wide .tn{font-size:13px}
+.tile.wide .ts{display:inline;margin:0 0 0 10px;height:auto}
 </style>
 </head>
 <body>
@@ -138,7 +149,7 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
   <div class="hero">
     <div class="avatar" id="hero_emo">平静</div>
     <div>
-      <div class="hn">喵伴</div>
+      <div class="hn">小纸壳</div>
       <div class="hs" id="hero_ai">正在读取状态…</div>
     </div>
   </div>
@@ -152,14 +163,15 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
 
   <div class="sec">功能</div>
   <div class="tiles">
-    <div class="tile" onclick="go('music')"><div class="ic">音</div><div class="tn">音乐</div><div class="ts" id="t_mus">--</div></div>
-    <div class="tile" onclick="go('face')"><div class="ic">貌</div><div class="tn">表情</div><div class="ts" id="t_emo">52 种</div></div>
-    <div class="tile" onclick="go('light')"><div class="ic">光</div><div class="tn">灯环</div><div class="ts" id="t_light">--</div></div>
-    <div class="tile" onclick="go('servo')"><div class="ic">动</div><div class="tn">动作</div><div class="ts" id="t_servo">--</div></div>
-    <div class="tile" onclick="go('sound')"><div class="ic">声</div><div class="tn">声音</div><div class="ts" id="t_vol">--</div></div>
-    <div class="tile" onclick="go('screen')"><div class="ic">屏</div><div class="tn">屏幕</div><div class="ts" id="t_flip">--</div></div>
-    <div class="tile" onclick="go('net')"><div class="ic">网</div><div class="tn">网络</div><div class="ts" id="t_net">--</div></div>
-    <div class="tile" onclick="go('sys')"><div class="ic">系</div><div class="tn">系统</div><div class="ts">诊断</div></div>
+    <div class="tile" onclick="go('music')"><div class="ic">🎵</div><div class="tn">音乐</div><div class="ts" id="t_mus">--</div></div>
+    <div class="tile" onclick="go('face')"><div class="ic">😊</div><div class="tn">表情</div><div class="ts" id="t_emo">52 种</div></div>
+    <div class="tile" onclick="go('light')"><div class="ic">💡</div><div class="tn">灯环</div><div class="ts" id="t_light">--</div></div>
+    <div class="tile" onclick="go('servo')"><div class="ic">🤖</div><div class="tn">动作</div><div class="ts" id="t_servo">云台角度</div></div>
+    <div class="tile" onclick="go('sound')"><div class="ic">🔊</div><div class="tn">声音</div><div class="ts" id="t_vol">--</div></div>
+    <div class="tile" onclick="go('screen')"><div class="ic">🖥️</div><div class="tn">屏幕</div><div class="ts" id="t_flip">方向</div></div>
+    <div class="tile" onclick="go('net')"><div class="ic">🌐</div><div class="tn">网络</div><div class="ts" id="t_net">--</div></div>
+    <div class="tile" onclick="go('dp')"><div class="ic">📊</div><div class="tn">数据页</div><div class="ts" id="t_dp">时间+温湿</div></div>
+    <div class="tile wide" onclick="go('sys')"><div class="ic">⚙️</div><div class="tn">系统</div><div class="ts">固件诊断 · 重启 · 恢复出厂</div></div>
   </div>
 
   <div class="sec">快捷操作</div>
@@ -180,20 +192,70 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
 
   <div class="tip" style="margin-top:14px">
     摸头顶 1 下 = 撸猫, 2 下 = 换灯效, 3 下 = 音乐暂停/继续。<br>
-    说话前先喊「小智小智」, 或在「声音」里打开免触摸对话。
+    说话前先喊「你好小智」, 或在「声音」里打开免触摸对话。
   </div>
 </section>
 
 <!-- ==================================================================== -->
 <!-- ============================ 音    乐 ============================== -->
 <!-- ==================================================================== -->
+  <!-- ============================ 数据页 ============================== -->
+  <section class="page" id="p-dp">
+  <div class="card">
+    <h2>这是什么</h2>
+    <div class="tip">屏幕上<b>短按 BOOT</b> 在「表情页 ↔ 数据页」之间切换。
+      数据页显示<b>当前时间</b>(SNTP 自动对时)和 <b>DHT11 温湿度</b>(实时刷新)。
+      下面选一个布局样式, <b>点选立即推送</b>到设备并记住(存 NVS, 重启不丢)。
+      布局长什么样可以到 <b>docs/data_preview.html</b> 预览页里先看效果。</div>
+  </div>
+  <div class="card">
+    <h2>布局样式</h2>
+    <div class="row" style="flex-wrap:wrap;gap:6px">
+      <div class="cbtn" onclick="dpStyle(0)">A 紧凑三行</div>
+      <div class="cbtn" onclick="dpStyle(1)">B 大时钟</div>
+      <div class="cbtn" onclick="dpStyle(2)">C 仪表盘</div>
+      <div class="cbtn" onclick="dpStyle(3)">D 环境监控</div>
+      <div class="cbtn" onclick="dpStyle(4)">E 极简居中</div>
+    </div>
+  </div>
+  </section>
+
 <section class="page" id="p-music">
+  <div class="card" id="necard">
+    <h2>网易云登录</h2>
+    <div class="row" style="margin-bottom:8px"><span class="label">状态</span><span class="val" id="ne_st">未登录</span></div>
+    <div id="ne_qrwrap" style="display:none;text-align:center;margin:6px 0 10px">
+      <div id="ne_qrbox" style="display:inline-block;position:relative">
+        <div id="ne_qr" style="background:#fff;padding:8px;border-radius:8px;color:#333;font-size:12px"></div>
+        <div id="ne_qrs" style="display:none;position:absolute;left:8px;right:8px;top:8px;bottom:8px;
+             background:rgba(10,14,30,.88);border-radius:8px;display:flex;flex-direction:column;
+             align-items:center;justify-content:center;gap:4px">
+          <div id="ne_qrs_ic" style="font-size:26px;line-height:1">✓</div>
+          <div id="ne_qrs_tx" style="font-size:12px;font-weight:600"></div>
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:#8b95bb;margin-top:6px">用「网易云音乐」APP 右上角扫一扫</div>
+      <div style="font-size:10.5px;color:#5a6488;margin-top:3px" id="ne_key"></div>
+    </div>
+    <div class="row" style="margin-bottom:6px">
+      <button class="cbtn on" style="flex:1;padding:8px 0" id="ne_btn" onclick="neLogin()">扫码登录</button>
+      <button class="cbtn" style="flex:0 0 64px;padding:8px 0"
+              onclick="if(confirm('确定要退出网易云登录吗？(需要重新扫码)'))neLogout()">退出</button>
+    </div>
+    <div class="row">
+      <input type="text" id="ne_ck" placeholder="或粘贴 Cookie: MUSIC_U=..." style="flex:1;font-size:11px">
+      <button class="cbtn" style="flex:0 0 56px" onclick="nePasteCookie()">保存</button>
+    </div>
+    <div class="tip">扫码后手机上点「确认登录」即可，Cookie 存在设备里，换设备要重新扫。<br>
+      不方便扫码时：浏览器 F12 → Application → Cookies → music.163.com，把 <b>MUSIC_U</b>（可连 __csrf 一起）粘到上面保存。</div>
+  </div>
   <div class="card">
     <h2>搜索 / 点播</h2>
     <div class="row" style="margin-bottom:6px">
       <input type="text" id="msong" placeholder="歌名 或 歌手+歌名" style="flex:1"
              onkeydown="if(event.key==='Enter')musicSearch()">
       <button class="cbtn on" style="flex:0 0 58px;padding:8px 0" onclick="musicSearch()">搜索</button>
+      <button class="cbtn" style="flex:0 0 58px;padding:8px 0" onclick="musicSearchArtist()">搜歌手</button>
       <button class="cbtn" style="flex:0 0 58px;padding:8px 0" onclick="musicPlayKw()">直接播</button>
     </div>
     <div class="row" style="margin-bottom:6px">
@@ -201,10 +263,13 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
       <button class="cbtn" style="flex:0 0 74px;padding:8px 0" onclick="hidePlaylists()">收起</button>
     </div>
     <!-- 我的歌单(账号里的歌单) -->
+    <div class="row" style="font-size:11.5px;color:#8b95bb;margin:2px 0 4px;display:none" id="pl_hd"></div>
     <div class="mlist" id="plist" style="display:none;margin-bottom:10px"></div>
     <!-- 曲目列表(搜索结果 或 某个歌单): 点哪首播哪首 -->
     <div class="row" style="font-size:11.5px;color:#8b95bb;margin:0 0 5px" id="src_v">曲目列表</div>
     <div class="mlist" id="mlist"></div>
+    <div class="tip" id="ml_hint" style="margin-top:6px">点「我的歌单」→ 点某个歌单的<b>「打开」</b>，
+      它下面的<b>曲目列表</b>就会装进那个歌单的歌，点歌名即播放。</div>
   </div>
 
   <div class="card">
@@ -318,6 +383,22 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
     </div>
   </div>
   <div class="card">
+    <h2>音色 <span class="v" id="voice_v" style="font-size:12px;color:#8b95bb"></span></h2>
+    <div class="tip" style="margin-bottom:7px">设备端实时变声(xiaozhi.me 的官方音色在它控制台配)。
+      切换后下一句播报立即生效, 断电记忆。说「用对讲机音说话」也行。</div>
+    <div class="grid g3" id="voice_btns">
+      <div class="cbtn" onclick="setVoice('original')">原声</div>
+      <div class="cbtn" onclick="setVoice('metal')">机械金属</div>
+      <div class="cbtn" onclick="setVoice('deep')">电子低沉</div>
+      <div class="cbtn" onclick="setVoice('alien')">赛博外星</div>
+      <div class="cbtn" onclick="setVoice('elec')">电流音</div>
+      <div class="cbtn" onclick="setVoice('strong')">强电流</div>
+      <div class="cbtn" onclick="setVoice('radio')">对讲机</div>
+      <div class="cbtn" onclick="setVoice('space')">深空回声</div>
+      <div class="cbtn" onclick="setVoice('elec2')">电流音2</div>
+    </div>
+  </div>
+  <div class="card">
     <h2>对话</h2>
     <div class="row">
       <span class="label">唤醒应答音「叮咚」</span>
@@ -400,12 +481,246 @@ input[type=text],input[type=password]{width:60%;padding:7px;background:#0f0f1a;c
 </section>
 
 <script>
+/* ==== 内嵌二维码生成器(经与参考实现逐模块比对, v1~v10 一致) ==== */
+/* 精简 QR 编码器 — byte 模式 / 版本 1~10 / 纠错等级 M
+   只为在设备网页里画网易云登录二维码, 不依赖任何外部库。 */
+var QRMini = (function () {
+  var EXP = new Uint8Array(256), LOG = new Uint8Array(256);
+  (function () { var x = 1; for (var i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x = (x << 1) ^ (x & 0x80 ? 0x11d : 0); } EXP[255] = 1; })();
+  function mul(a, b) { return (a === 0 || b === 0) ? 0 : EXP[(LOG[a] + LOG[b]) % 255]; }
+
+  /* 每版本: 每块纠错码字数 ec, 块结构 [[块数, 每块数据码字数], ...] */
+  var SPEC = {
+    1:  { ec: 10, g: [[1, 16]] },
+    2:  { ec: 16, g: [[1, 28]] },
+    3:  { ec: 26, g: [[1, 44]] },
+    4:  { ec: 18, g: [[2, 32]] },
+    5:  { ec: 24, g: [[2, 43]] },
+    6:  { ec: 16, g: [[4, 27]] },
+    7:  { ec: 18, g: [[4, 31]] },
+    8:  { ec: 22, g: [[2, 38], [2, 39]] },
+    9:  { ec: 22, g: [[3, 36], [2, 37]] },
+    10: { ec: 26, g: [[4, 43], [1, 44]] }
+  };
+  var ALIGN = { 1: [], 2: [6,18], 3: [6,22], 4: [6,26], 5: [6,30], 6: [6,34],
+                7: [6,22,38], 8: [6,24,42], 9: [6,26,46], 10: [6,28,50] };
+
+  function genPoly(n) {
+    var p = [1];
+    for (var i = 0; i < n; i++) {
+      var q = p.slice(); q.push(0);
+      for (var j = 0; j < p.length; j++) q[j + 1] ^= mul(p[j], EXP[i]);
+      p = q;
+    }
+    return p;
+  }
+  function rs(data, ecLen) {
+    var g = genPoly(ecLen), res = data.slice();
+    for (var i = 0; i < ecLen; i++) res.push(0);
+    for (i = 0; i < data.length; i++) {
+      var c = res[i];
+      if (c !== 0) for (var j = 0; j < g.length; j++) res[i + j] ^= mul(g[j], c);
+    }
+    return res.slice(data.length);
+  }
+  function utf8(s) {
+    var b = [];
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c < 0x80) b.push(c);
+      else if (c < 0x800) { b.push(0xc0 | (c >> 6), 0x80 | (c & 63)); }
+      else { b.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63)); }
+    }
+    return b;
+  }
+  function totalData(v) { var t = 0; SPEC[v].g.forEach(function (g) { t += g[0] * g[1]; }); return t; }
+
+  function encode(text) {
+    var bytes = utf8(text), ver = 0;
+    for (var v = 1; v <= 10; v++) {
+      var cntBits = v < 10 ? 8 : 16;
+      if (totalData(v) * 8 >= 4 + cntBits + bytes.length * 8) { ver = v; break; }
+    }
+    if (!ver) return null;
+    var cap = totalData(ver) * 8, bits = [];
+    function put(val, len) { for (var i = len - 1; i >= 0; i--) bits.push((val >> i) & 1); }
+    put(4, 4);
+    put(bytes.length, ver < 10 ? 8 : 16);
+    for (var i = 0; i < bytes.length; i++) put(bytes[i], 8);
+    for (i = 0; i < 4 && bits.length < cap; i++) bits.push(0);
+    while (bits.length % 8) bits.push(0);
+    var cws = [];
+    for (i = 0; i < bits.length; i += 8) {
+      var by = 0;
+      for (var j = 0; j < 8; j++) by = (by << 1) | bits[i + j];
+      cws.push(by);
+    }
+    var pad = [0xEC, 0x11], pi = 0;
+    while (cws.length < totalData(ver)) cws.push(pad[pi++ % 2]);
+
+    var blocks = [], ecs = [], pos = 0;
+    SPEC[ver].g.forEach(function (g) {
+      for (var k = 0; k < g[0]; k++) {
+        var dd = cws.slice(pos, pos + g[1]); pos += g[1];
+        blocks.push(dd); ecs.push(rs(dd, SPEC[ver].ec));
+      }
+    });
+    var maxD = 0; blocks.forEach(function (b) { if (b.length > maxD) maxD = b.length; });
+    var out = [];
+    for (i = 0; i < maxD; i++) blocks.forEach(function (b) { if (i < b.length) out.push(b[i]); });
+    for (i = 0; i < SPEC[ver].ec; i++) ecs.forEach(function (e) { out.push(e[i]); });
+    return { ver: ver, codewords: out };
+  }
+
+  function versionBits(v) {
+    var bch = v << 12;
+    for (var i = 17; i >= 12; i--) if ((bch >>> i) & 1) bch ^= 0x1f25 << (i - 12);
+    return (v << 12) | bch;
+  }
+  function formatBits(ec, mask) {          /* ec: L=1 M=0 Q=3 H=2 */
+    var data = ((ec & 3) << 3) | mask, bch = data << 10;
+    for (var i = 14; i >= 10; i--) if ((bch >>> i) & 1) bch ^= 0x537 << (i - 10);
+    return (((data << 10) | bch) ^ 0x5412) & 0x7fff;
+  }
+  function placeFormat(m, fn, fmt, size) {
+    var i;
+    /* ★ 位序: 高位(bit14)放在序列的第一个位置 —— 放反了会差 8 个模块 */
+    for (i = 0; i <= 5; i++) m[8][i] = (fmt >> (14 - i)) & 1;
+    m[8][7] = (fmt >> 8) & 1;
+    m[8][8] = (fmt >> 7) & 1;
+    m[7][8] = (fmt >> 6) & 1;
+    for (i = 9; i < 15; i++) m[14 - i][8] = (fmt >> (14 - i)) & 1;
+    for (i = 0; i < 7; i++) m[size - 1 - i][8] = (fmt >> (14 - i)) & 1;
+    for (i = 7; i < 15; i++) m[8][size - 15 + i] = (fmt >> (14 - i)) & 1;
+    m[size - 8][8] = 1;
+  }
+  function applyMask(m, fn, k, size) {
+    for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+      if (fn[y][x]) continue;
+      var v;
+      switch (k) {
+        case 0: v = (y + x) % 2 === 0; break;
+        case 1: v = y % 2 === 0; break;
+        case 2: v = x % 3 === 0; break;
+        case 3: v = (y + x) % 3 === 0; break;
+        case 4: v = (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0; break;
+        case 5: v = ((y * x) % 2) + ((y * x) % 3) === 0; break;
+        case 6: v = (((y * x) % 2) + ((y * x) % 3)) % 2 === 0; break;
+        default: v = (((y + x) % 2) + ((y * x) % 3)) % 2 === 0; break;
+      }
+      if (v) m[y][x] ^= 1;
+    }
+  }
+  function penalty(m, size) {
+    var p = 0, i, j, run, last;
+    for (i = 0; i < size; i++) {
+      run = 1; last = m[i][0];
+      for (j = 1; j < size; j++) {
+        if (m[i][j] === last) run++;
+        else { if (run >= 5) p += 3 + (run - 5); last = m[i][j]; run = 1; }
+      }
+      if (run >= 5) p += 3 + (run - 5);
+    }
+    for (j = 0; j < size; j++) {
+      run = 1; last = m[0][j];
+      for (i = 1; i < size; i++) {
+        if (m[i][j] === last) run++;
+        else { if (run >= 5) p += 3 + (run - 5); last = m[i][j]; run = 1; }
+      }
+      if (run >= 5) p += 3 + (run - 5);
+    }
+    for (i = 0; i < size - 1; i++) for (j = 0; j < size - 1; j++) {
+      var v = m[i][j];
+      if (v === m[i][j + 1] && v === m[i + 1][j] && v === m[i + 1][j + 1]) p += 3;
+    }
+    var p1 = [1,0,1,1,1,0,1,0,0,0,0], p2 = [0,0,0,0,1,0,1,1,1,0,1];
+    function hit(a, off, pat) { for (var k = 0; k < 11; k++) if (a[off + k] !== pat[k]) return false; return true; }
+    for (i = 0; i < size; i++) for (j = 0; j + 11 <= size; j++)
+      if (hit(m[i], j, p1) || hit(m[i], j, p2)) p += 40;
+    for (j = 0; j < size; j++) {
+      var col = []; for (i = 0; i < size; i++) col.push(m[i][j]);
+      for (i = 0; i + 11 <= size; i++) if (hit(col, i, p1) || hit(col, i, p2)) p += 40;
+    }
+    var dark = 0;
+    for (i = 0; i < size; i++) for (j = 0; j < size; j++) dark += m[i][j];
+    var pct = dark * 100 / (size * size);
+    p += Math.floor(Math.abs(pct - 50) / 5) * 10;
+    return p;
+  }
+
+  function build(text) {
+    var e = encode(text);
+    if (!e) return null;
+    var ver = e.ver, size = ver * 4 + 17, i, j;
+    var m = [], fn = [];
+    for (i = 0; i < size; i++) { m.push(new Uint8Array(size)); fn.push(new Uint8Array(size)); }
+    function setFn(y, x, v) { m[y][x] = v; fn[y][x] = 1; }
+    function finder(r, c) {
+      for (var dy = -1; dy <= 7; dy++) for (var dx = -1; dx <= 7; dx++) {
+        var y = r + dy, x = c + dx;
+        if (y < 0 || x < 0 || y >= size || x >= size) continue;
+        var dd = Math.max(Math.abs(dy - 3), Math.abs(dx - 3));
+        setFn(y, x, (dd !== 2 && dd <= 3) ? 1 : 0);
+      }
+    }
+    finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+    for (i = 8; i < size - 8; i++) { setFn(6, i, i % 2 === 0 ? 1 : 0); setFn(i, 6, i % 2 === 0 ? 1 : 0); }
+    var ap = ALIGN[ver];
+    for (i = 0; i < ap.length; i++) for (j = 0; j < ap.length; j++) {
+      var cy = ap[i], cx = ap[j];
+      if ((cy === 6 && cx === 6) || (cy === 6 && cx === size - 7) || (cy === size - 7 && cx === 6)) continue;
+      for (var dy2 = -2; dy2 <= 2; dy2++) for (var dx2 = -2; dx2 <= 2; dx2++)
+        setFn(cy + dy2, cx + dx2, Math.max(Math.abs(dy2), Math.abs(dx2)) !== 1 ? 1 : 0);
+    }
+    for (i = 0; i <= 8; i++) { if (i !== 6) { setFn(8, i, 0); setFn(i, 8, 0); } }
+    for (i = 0; i < 8; i++) { setFn(8, size - 1 - i, 0); setFn(size - 1 - i, 8, 0); }
+    setFn(size - 8, 8, 1);
+    if (ver >= 7) {
+      var vi = versionBits(ver);
+      for (i = 0; i < 18; i++) {
+        var b = (vi >> i) & 1, r2 = Math.floor(i / 3), c2 = size - 11 + (i % 3);
+        setFn(r2, c2, b); setFn(c2, r2, b);
+      }
+    }
+    var idx = 0, total = e.codewords.length * 8;
+    for (var right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (var vert = 0; vert < size; vert++) {
+        var up = ((right + 1) & 2) === 0;
+        for (var k = 0; k < 2; k++) {
+          var x2 = right - k, y2 = up ? size - 1 - vert : vert;
+          if (fn[y2][x2]) continue;
+          var bit = 0;
+          if (idx < total) bit = (e.codewords[idx >> 3] >> (7 - (idx & 7))) & 1;
+          m[y2][x2] = bit; idx++;
+        }
+      }
+    }
+    var best = 0, bestScore = 1e9, bestM = null;
+    for (var mk = 0; mk < 8; mk++) {
+      var mm = m.map(function (row) { return row.slice(); });
+      applyMask(mm, fn, mk, size);
+      placeFormat(mm, fn, formatBits(0, mk), size);   /* 0 = 纠错等级 M */
+      var sc = penalty(mm, size);
+      if (sc < bestScore) { bestScore = sc; best = mk; bestM = mm; }
+    }
+    return { size: size, ver: ver, mask: best, modules: bestM, fn: fn, codewords: e.codewords };
+  }
+  return { build: build, encode: encode };
+})();
+if (typeof module !== 'undefined' && module.exports) module.exports = QRMini;
+
+
+
+
+</script>
+<script>
 /* ==================================================================
  * 路由: #/home 是主页面, 其余是子页面。用 location.hash 而不是多文件,
  * 好处是无请求瞬时切换 + 浏览器/安卓返回键天然可用。
  * ================================================================== */
 const PAGES={home:'控制台', music:'网易云音乐', face:'表情', light:'灯环',
-             servo:'头部动作', sound:'声音', screen:'屏幕', net:'网络', sys:'系统'};
+             servo:'头部动作', sound:'声音', screen:'屏幕', net:'网络', sys:'系统', dp:'数据页'};
 function cur(){
   const h=(location.hash||'').replace(/^#\/?/,'');
   return PAGES[h]?h:'home';
@@ -434,11 +749,22 @@ function mcp(name,args){
 }
 
 /* ---------- 灯光 ---------- */
-const LIGHTS=["关灯","单色常亮","呼吸","渐变","彩虹","警灯","律动"];
+const LIGHTS=["关灯","单色常亮","呼吸","彩虹环","彩虹呼吸","追光","双点对撞","镜像呼吸","脉冲扩散","火焰","星空闪烁","电平环","音乐律动","音乐频谱","警车爆闪"];
 const lgrid=document.getElementById('lightGrid');
 LIGHTS.forEach((n,i)=>{const b=document.createElement('div');
   b.className='cbtn';b.id='L'+i;b.textContent=n;b.onclick=()=>setLight(i);lgrid.appendChild(b);});
 function setLight(i){ fetch('/light?effect='+i); }
+const DP_NAMES=['A 紧凑三行','B 大时钟','C 仪表盘','D 环境监控','E 极简居中'];
+function dpStyle(n){
+  fetch('/datapage?style='+n).then(r=>r.json()).then(d=>{
+    const el=document.getElementById('t_dp');
+    if(el) el.textContent = DP_NAMES[d.style] || ('样式 '+d.style);
+    localStorage.setItem('dpstyle', d.style);
+  }).catch(()=>{});
+}
+function dpStylePage(){ go('dp'); }
+document.getElementById('t_dp').textContent =
+  DP_NAMES[localStorage.getItem('dpstyle')||0] || '时间+温湿';
 function nextLight(){ fetch('/light?next=1'); }
 function setLightBr(v){ document.getElementById('lbr_v').textContent=v+'%'; fetch('/light?br='+v); }
 function setColor(r,g,b){ mcp('self.light.set_color',{color:'#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('')}); }
@@ -462,6 +788,14 @@ function musicPlayKw(){
   if(!s){ alert('请输入歌名'); return; }
   fetch('/music?q='+encodeURIComponent(s));
 }
+/* ★ 按歌手名搜歌: 搜到歌手 → 热门歌曲 30 首装进下面的曲目列表, 点歌名即播 */
+function musicSearchArtist(){
+  const s=document.getElementById('msong').value.trim();
+  if(!s){ alert('请输入歌手名'); return; }
+  document.getElementById('mlist').innerHTML='<div class="mitem" style="cursor:default;color:#6b76a0">正在搜索歌手「'+esc(s)+'」的热门歌曲…（约几秒）</div>';
+  mlistHTML='';
+  fetch('/music?artist='+encodeURIComponent(s));
+}
 function playId(id){ fetch('/music?play='+encodeURIComponent(id)); }
 function musicCtl(c){ fetch('/music?ctl='+c); }
 function saveMusicBase(){
@@ -470,23 +804,33 @@ function saveMusicBase(){
   fetch('/music?serve='+encodeURIComponent(b)).then(()=>alert('已保存'));
 }
 /* ---------- 我的歌单 ---------- */
-let plHTML='', plShown=false;
+let plHTML='', plShown=false, lastSrc='';
 function loadPlaylists(){
   plShown=true;
   const box=document.getElementById('plist');
   box.style.display='block';
-  box.innerHTML='<div class="mitem" style="cursor:default;color:#6b76a0">加载中…</div>';
+  box.innerHTML='<div class="mitem" style="cursor:default;color:#6b76a0">加载中…（歌单多时要 10~20 秒）</div>';
+  const hd=document.getElementById('pl_hd');
+  hd.style.display='block'; hd.textContent='正在读取你的歌单…';
   plHTML='';
   fetch('/music?plsreq=1');     /* 触发一次; 结果由 /music?pls=1 轮询读取 */
 }
 function hidePlaylists(){
   plShown=false;
   document.getElementById('plist').style.display='none';
+  document.getElementById('pl_hd').style.display='none';
 }
-/* 打开某个歌单: 把它的歌装进曲目列表, 之后就能点播 */
-function openPlaylist(id){
-  document.getElementById('mlist').innerHTML='<div class="mitem" style="cursor:default;color:#6b76a0">读取歌单中…</div>';
+/* 打开某个歌单: 把它的歌装进曲目列表, 之后就能点播。
+   传元素本身(能从 data-nm 拿到歌单名, 名字里有引号也不会出错), 也兼容直接传 id。 */
+function openPlaylist(el){
+  const id   = (typeof el==='string') ? el : (el.dataset.pid||'');
+  const name = (typeof el==='string') ? ''   : (el.dataset.nm||'');
+  const ml=document.getElementById('mlist');
+  ml.innerHTML='<div class="mitem" style="cursor:default;color:#6b76a0">正在读取'
+              +(name?'「'+esc(name)+'」':'歌单')+'…（几秒, 请稍候）</div>';
   mlistHTML='';
+  /* ★ 把曲目列表滚到眼前: 以前点完页面一动不动, 用户以为"没反应" */
+  ml.scrollIntoView({block:'center'});
   fetch('/music?plsload='+encodeURIComponent(id)).then(function(){ setTimeout(refreshMusic,300); });
 }
 function refreshPlaylists(){
@@ -499,11 +843,17 @@ function refreshPlaylists(){
       return;
     }
     const html=d.items.map(function(it){
-      return '<div class="mitem" onclick="openPlaylist(\''+it.id+'\')">'
+      return '<div class="mitem" data-pid="'+it.id+'" data-nm="'+esc(it.name)+'" onclick="openPlaylist(this)">'
            + '<span class="no">'+it.count+'</span>'
            + '<span class="nm">'+esc(it.name)+'</span>'
            + '<span class="pl">打开</span></div>';
     }).join('');
+    /* 明确告诉用户一共多少个(以前只显示一屏, 看着像"只有 20 个") */
+    const hd=document.getElementById('pl_hd');
+    hd.style.display='block';
+    hd.textContent='我的歌单 · 已载入 '+d.count+' 个'
+                  +(d.count>=20?'（只取前 20 个，省流量）':'')
+                  +'　点「打开」装进下面的曲目列表';
     if(html!==plHTML){ box.innerHTML=html; plHTML=html; }
   }).catch(function(){});
 }
@@ -526,7 +876,14 @@ function refreshMusic(){
     }
     if(html!==mlistHTML){ box.innerHTML=html; mlistHTML=html; }
     document.getElementById('src_v').textContent =
-      d.src ? ('曲目来源: '+d.src+'  (共 '+d.count+' 首)') : '曲目列表';
+      d.src ? ('曲目列表 · 来自「'+d.src+'」共 '+d.count+' 首（点歌名即播放）') : '曲目列表';
+    /* ★ 来源变了(刚打开一个歌单) → 滚到眼前并闪一下边框, 让用户确实看到 */
+    if(d.src && d.src!==lastSrc){
+      lastSrc=d.src;
+      box.scrollIntoView({block:'center'});
+      box.style.borderColor='#00d4ff';
+      setTimeout(function(){ box.style.borderColor=''; },1500);
+    }
   }).catch(function(){});
 }
 
@@ -537,6 +894,31 @@ function setWakeBeep(on){ fetch('/wakebeep?on='+(on?1:0)); }
 function setVad(on){ fetch('/vad?on='+(on?1:0)); }
 /* 让设备自己播一段测试语音(不经过服务端), 用来单独验证"能不能出声" */
 function ttsTest(){ fetch('/ttstest?sec=3'); }
+
+/* ---------- 音色(设备端 DSP 变声) ---------- */
+const VOICE_IDS=['original','metal','deep','alien','elec','strong','radio','space','elec2'];
+function markVoice(v){
+  document.querySelectorAll('#voice_btns .cbtn').forEach(function(b,i){
+    b.style.borderColor = (VOICE_IDS[i]===v) ? '#00d4ff' : '';
+  });
+}
+function setVoice(v){
+  mcp('self.audio_voice.set',{voice:v}).then(function(t){
+    const m=(t||'').match(/音色已切换: ([^"\\]+)/);
+    if(m) document.getElementById('voice_v').textContent='当前: '+m[1];
+    markVoice(v);
+  });
+}
+/* 进声音页时同步一次当前音色 */
+mcp('self.audio_voice.get').then(function(t){
+  const m=(t||'').match(/当前音色: ([^"\\]+)/);
+  if(m){
+    document.getElementById('voice_v').textContent='当前: '+m[1];
+    const map={'原声':'original','机械金属':'metal','电子低沉':'deep','赛博外星':'alien',
+               '电流音':'elec','强电流':'strong','对讲机':'radio','深空回声':'space','电流音2':'elec2'};
+    if(map[m[1]]) markVoice(map[m[1]]);
+  }
+});
 
 /* ---------- 表情 ---------- */
 const EMOS=["平静","开心","难过","生气","惊讶","困倦","喜爱","眨眼","哭泣","晕眩","兴奋","酷","害羞","得意","困惑","思考",
@@ -597,7 +979,7 @@ function refresh(){
     $('k_net').textContent=d.sta?'在线':'离线';
     $('k_mus').textContent=d.mus_playing?'播放中':(d.mus_on?'已暂停':'空闲');
     $('k_light').textContent=d.light>0?('亮度'+d.light_br):'关灯';
-    $('k_env').textContent=d.env_valid?(d.temp.toFixed(1)+'°'):'--';
+    $('k_env').textContent=d.env_valid?(d.temp.toFixed(0)+'° '+d.hum.toFixed(0)+'%'):'--';
 
     /* --- 主页面: 功能入口的副标题(一眼看到每个模块的状态) --- */
     $('t_mus').textContent=d.mus_playing?'播放中':(d.mus_on?'已暂停':'空闲');
@@ -656,8 +1038,126 @@ setInterval(refresh,500);
 setInterval(refreshMusic,1500);
 setInterval(refreshPlaylists,1500);
 route();
+/* ==================== 网易云扫码登录 ====================
+   流程完全在设备本地: 设备向网易云要 unikey → 这里画二维码 → 手机扫 →
+   设备后台轮询到 803 → Cookie 存进 NVS。全程不需要任何服务器。
+   （二维码是页面里【内嵌】的生成器画的 —— 不依赖任何 CDN/外部请求,
+     所以在"设备热点模式"(没有外网)下也能用。） */
+let NE_TIMER=null, NE_LASTKEY='';
+function neRender(k){
+  const box=$('ne_qr');
+  if(!k){ box.innerHTML=''; $('ne_qrwrap').style.display='none'; NE_LASTKEY=''; return; }
+  $('ne_qrwrap').style.display='block';
+  if(k===NE_LASTKEY) return;
+  NE_LASTKEY=k; box.innerHTML='';
+  try{
+    const qr=QRMini.build('https://music.163.com/login?codekey='+k);
+    if(!qr){ box.innerHTML='二维码生成失败'; return; }
+    const s=Math.max(3,Math.floor(172/qr.size)), pad=8;
+    const cv=document.createElement('canvas');
+    cv.width=cv.height=qr.size*s+pad*2;
+    const g=cv.getContext('2d');
+    g.fillStyle='#fff'; g.fillRect(0,0,cv.width,cv.height);
+    g.fillStyle='#000';
+    for(let y=0;y<qr.size;y++) for(let x=0;x<qr.size;x++)
+      if(qr.modules[y][x]) g.fillRect(pad+x*s,pad+y*s,s,s);
+    box.appendChild(cv);
+  }catch(e){ box.innerHTML='二维码生成失败: '+e.message; }
+}
+/* 二维码浮层: 801 等待(不盖)/802 已扫码(盖上)/800 过期(盖上)/成功(绿色盖上) */
+function neOverlay(state, tx, color){
+  const ov=$('ne_qrs');
+  if(!ov) return;
+  if(!state){ ov.style.display='none'; return; }
+  ov.style.display='flex';
+  ov.style.background='rgba(10,14,30,.88)';
+  $('ne_qrs_ic').textContent = state==='ok' ? '✓' : '📱';
+  $('ne_qrs_ic').style.color = color;
+  $('ne_qrs_tx').textContent = tx;
+  $('ne_qrs_tx').style.color = color;
+}
+async function nePoll(){
+  try{
+    const d=await (await fetch('/nlogin')).json();
+    if(d.login){
+      $('ne_st').textContent='已登录: '+(d.nick||'')+' · 音乐功能已可用';
+      $('ne_st').style.color='#3ddc84';
+      $('ne_btn').textContent='已登录';
+      neOverlay('ok','登录成功 · 音乐已可用','#3ddc84');
+      /* 成功画面停 2.5 秒再收起二维码, 让用户确实看到"成功了" */
+      setTimeout(function(){ if($('ne_btn').textContent==='已登录') neRender(''); }, 2500);
+      if(NE_TIMER){ clearInterval(NE_TIMER); NE_TIMER=null; }
+      return;
+    }
+    $('ne_st').style.color='';
+    /* 设备会去网易云验证 Cookie 真伪: ckok=0 表示"存着但已失效", 必须明说,
+       否则用户会像之前那样看着"已登录"却怎么都搜不到歌。 */
+    if(d.ckok===0){
+      $('ne_st').textContent='登录已失效 —— 网易云不认这张 Cookie, 请重新登录';
+      neOverlay('',''); 
+    } else if(d.code===802){
+      $('ne_st').textContent='已扫码 · 请在手机上点「确认登录」';
+      neOverlay('scan','请在手机上确认授权','#ffd54a');
+    } else if(d.code===800){
+      $('ne_st').textContent='二维码已过期, 正在自动换一张…';
+      neOverlay('exp','二维码已过期 · 自动换新','#ff8a80');
+    } else {
+      $('ne_st').textContent =
+        d.code===801 ? '等待扫码…' :
+        d.code===-1  ? '取二维码失败, 正在自动重试…' : '正在获取二维码…';
+      neOverlay('','');
+    }
+    /* 显示二维码 ID 前 8 位: 出问题时能一眼看出"你扫的"和"设备在轮的"是不是同一张 */
+    $('ne_key').textContent = d.key ? ('二维码 ID ' + d.key.slice(0,8) + (d.busy?' · 查询中':'')) : '';
+    neRender(d.key||'');
+  }catch(e){}
+}
+function neLogin(){
+  if($('ne_btn').textContent==='已登录') return;
+  $('ne_btn').textContent='获取中…';
+  /* ★ 只有点这个按钮才会去网易云取新码; 平时的 nePoll 只是读设备缓存的状态,
+     一次网络都不打 —— 否则开着页面就等于让设备每 2 秒做一次 TLS 握手。 */
+  fetch('/nlogin?new=1').then(()=>{ $('ne_btn').textContent='刷新二维码'; nePoll(); });
+  neStartTimer();
+}
+/* 页面切到后台就停止轮询(省设备资源); ★ 切回来必须恢复 ——
+   否则"切去别的标签页再回来"会导致页面卡在一张【过期的二维码】上:
+   设备那边已经换了新 key, 页面却还在显示旧的, 扫了当然没反应。 */
+function neStartTimer(){ if(!NE_TIMER) NE_TIMER=setInterval(nePoll,2000); }
+document.addEventListener('visibilitychange',function(){
+  if(document.hidden){
+    if(NE_TIMER){ clearInterval(NE_TIMER); NE_TIMER=null; }
+  } else if($('ne_qrwrap').style.display==='block' && $('ne_btn').textContent!=='已登录'){
+    neStartTimer(); nePoll();
+  }
+});
+async function neLogout(){
+  if(NE_TIMER){ clearInterval(NE_TIMER); NE_TIMER=null; }
+  await fetch('/nlogin?logout=1');
+  NE_LASTKEY=''; neRender('');
+  $('ne_btn').textContent='扫码登录';
+  $('ne_st').textContent='已退出登录';
+}
+async function nePasteCookie(){
+  const v=($('ne_ck').value||'').trim();
+  if(!v){ $('ne_st').textContent='请先粘贴 Cookie'; return; }
+  try{
+    const r=await (await fetch('/nlogin',{method:'POST',body:'cookie='+encodeURIComponent(v)})).json();
+    $('ne_ck').value='';
+    if(r.login){ $('ne_st').textContent='已登录: '+(r.nick||''); $('ne_btn').textContent='已登录'; neRender(''); }
+    else if(r.ckok===0) $('ne_st').textContent='Cookie 已失效或无效 —— 网易云账号接口不认它';
+    else $('ne_st').textContent='Cookie 无效(必须含 MUSIC_U)';
+  }catch(e){ $('ne_st').textContent='保存失败'; }
+}
+
+setInterval(refresh,500);
+setInterval(refreshMusic,1500);
+setInterval(refreshPlaylists,1500);
+route();
 refresh(); refreshMusic();
+nePoll();
 </script>
 </body>
 </html>
 )HTML";
+

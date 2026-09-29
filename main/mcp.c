@@ -14,6 +14,7 @@
 #include "mcp.h"
 #include "config.h"
 #include "light.h"
+#include "xiaozhi.h"      /* ai_client_set_tts_voice: 播报音色(本地变调) */
 #include "dht11.h"
 #include "speaker_max98357a.h"
 #include "servo.h"
@@ -21,6 +22,7 @@
 #include "persona.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include <stdint.h>
 
 #include <stdio.h>
@@ -98,7 +100,12 @@ static bool parse_color(const char *s, uint8_t *r, uint8_t *g, uint8_t *b)
     if (!s || !s[0]) return false;
 
     if (s[0] == '#') s++;
-    if (strlen(s) == 6 && isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[5])) {
+    /* ★ 6 位必须【全部】是十六进制: 只查首尾的话 "12G45Z" 会被接受,
+       非法位经 strtol 静默变 0(比如绿色分量悄悄变 0) */
+    if (strlen(s) == 6 &&
+        isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1]) &&
+        isxdigit((unsigned char)s[2]) && isxdigit((unsigned char)s[3]) &&
+        isxdigit((unsigned char)s[4]) && isxdigit((unsigned char)s[5])) {
         char buf[3] = {0};
         buf[0] = s[0]; buf[1] = s[1]; *r = (uint8_t)strtol(buf, NULL, 16);
         buf[0] = s[2]; buf[1] = s[3]; *g = (uint8_t)strtol(buf, NULL, 16);
@@ -138,12 +145,16 @@ typedef struct {
 static const tool_def_t TOOLS[] = {
 {
     "self.light.set_effect",
-    "Set the LED ring light effect. Effects: 'off'(关灯), 'mono'(单色常亮), "
-    "'breathe'(单色呼吸), 'gradient'(渐变流动), 'rainbow'(多色呼吸/彩虹), "
-    "'police'(警车爆闪), 'music'(跟随音乐律动).",
+    "Set the LED ring light effect (8-LED ring). Effects: 'off'(关灯), "
+    "'mono'(单色常亮), 'breathe'(单色呼吸), 'rainbow'(彩虹环), "
+    "'rainbow_breath'(彩虹呼吸), 'chase'(追光), 'twin'(双点对撞), "
+    "'mirror'(镜像呼吸), 'pulse'(脉冲扩散), 'fire'(火焰), 'starry'(星空闪烁), "
+    "'level'(电平环), 'music'(音乐律动,放歌时自动进), 'music_bands'(音乐频谱), "
+    "'police'(警车爆闪).",
     "{\"type\":\"object\",\"properties\":{\"effect\":{\"type\":\"string\","
-    "\"description\":\"off | mono | breathe | gradient | rainbow | police | music, "
-    "也接受中文如 呼吸/渐变/彩虹/爆闪/律动/关灯\"}},"
+    "\"description\":\"off | mono | breathe | rainbow | rainbow_breath | chase | "
+    "twin | mirror | pulse | fire | starry | level | music | music_bands | police, "
+    "也接受中文如 呼吸/彩虹/追光/火焰/星空/律动/频谱/爆闪/关灯\"}},"
     "\"required\":[\"effect\"]}"
 },
 {
@@ -195,6 +206,24 @@ static const tool_def_t TOOLS[] = {
 {
     "self.audio_speaker.get_volume",
     "Get the current speaker volume, 0-100. 查询当前音量。",
+    "{\"type\":\"object\",\"properties\":{}}"
+},
+{
+    /* ★ 本地音色: 服务端没有换声消息, 这是设备端对播报做的实时 DSP 变声 */
+    "self.audio_voice.set",
+    "Set the TTS speaking voice (device-side DSP voice changer). Voices: "
+    "'original'(原声), 'metal'(机械金属), 'deep'(电子低沉), 'alien'(赛博外星), "
+    "'elec'(电流音), 'strong'(强电流), 'radio'(对讲机), 'space'(深空回声), "
+    "'elec2'(电流音2). 切换说话的音色。",
+    "{\"type\":\"object\",\"properties\":{\"voice\":"
+    "{\"type\":\"string\",\"description\":\"original | metal | deep | alien | "
+    "elec | strong | radio | space | elec2, 也接受中文: 原声/机械金属/电子低沉/"
+    "赛博外星/电流音/强电流/对讲机/深空回声/电流音2, 或 0~8\"}},"
+    "\"required\":[\"voice\"]}"
+},
+{
+    "self.audio_voice.get",
+    "Get the current TTS voice. 查询当前音色。",
     "{\"type\":\"object\",\"properties\":{}}"
 },
 /* ---------------- 舵机: 让 AI 能"转头看" ----------------
@@ -424,6 +453,24 @@ static const char *exec_tool(const char *name, cJSON *args, bool *is_err)
         return out;
     }
 
+    /* ---------------- 播报音色(本地变调) ---------------- */
+    if (strcmp(name, "self.audio_voice.set") == 0) {
+        cJSON *v = args ? cJSON_GetObjectItem(args, "voice") : NULL;
+        if (!v || !cJSON_IsString(v)) { *is_err = true; return "missing 'voice'"; }
+        if (!ai_client_set_tts_voice(v->valuestring)) {
+            *is_err = true;
+            snprintf(out, sizeof(out), "unknown voice '%s' (normal/cute/uncle/robot)",
+                     v->valuestring);
+            return out;
+        }
+        snprintf(out, sizeof(out), "音色已切换: %s", ai_client_tts_voice_cn());
+        return out;
+    }
+    if (strcmp(name, "self.audio_voice.get") == 0) {
+        snprintf(out, sizeof(out), "当前音色: %s", ai_client_tts_voice_cn());
+        return out;
+    }
+
     /* ---------------- 舵机 ---------------- */
     if (strcmp(name, "self.servo.set_pan") == 0) {
         cJSON *a = args ? cJSON_GetObjectItem(args, "angle") : NULL;
@@ -534,6 +581,11 @@ static const char *exec_tool(const char *name, cJSON *args, bool *is_err)
 
 char *mcp_handle_payload(const char *payload_json, const char *session_id)
 {
+    /* ★ cJSON_Parse 内部会对入参做 strlen(NULL) —— 直接崩。调用方确实可能传空。 */
+    if (!payload_json) {
+        ESP_LOGW(TAG, "payload 为空");
+        return rpc_error(NULL, -32700, "parse error", session_id);
+    }
     cJSON *req = cJSON_Parse(payload_json);
     if (!req) {
         ESP_LOGW(TAG, "payload 不是合法 JSON");
@@ -593,8 +645,8 @@ char *mcp_handle_payload(const char *payload_json, const char *session_id)
         resp = build_tools_list(id, session_id);
         cJSON_Delete(req);
         ESP_LOGI(TAG, "MCP -> tools/list (%u 个工具)", (unsigned)TOOL_COUNT);
-        /* 把工具清单原文打出来, 方便核对 JSON Schema 是否被服务端接受 */
-        ESP_LOGI(TAG, "tools/list 原文: %s", resp ? resp : "(null)");
+        /* 把工具清单原文打出来(几 KB, 每次连接都打会拖慢日志 —— 要看时开 DEBUG) */
+        ESP_LOGD(TAG, "tools/list 原文: %s", resp ? resp : "(null)");
         return resp;
     }
 
@@ -608,9 +660,18 @@ char *mcp_handle_payload(const char *payload_json, const char *session_id)
             return resp;
         }
         bool is_err = false;
+        /* ★ exec_tool 用 static 缓冲装返回文本: 两个调用方 —— WS 回调任务
+           (AI 工具调用)和 httpd 任务(网页 /mcp) —— 并发进来会互相覆盖,
+           AI 和网页各自收到两句话的混合体。串行化(工具本身可能阻塞几秒,
+           串行正是我们想要的语义)。静态创建 mutex, 不依赖初始化顺序。 */
+        static StaticSemaphore_t s_tool_mux_mem;
+        static SemaphoreHandle_t s_tool_mux;
+        if (!s_tool_mux) s_tool_mux = xSemaphoreCreateMutexStatic(&s_tool_mux_mem);
+        xSemaphoreTake(s_tool_mux, portMAX_DELAY);
         const char *text = exec_tool(nm->valuestring, args, &is_err);
         ESP_LOGI(TAG, "MCP -> tools/call %s => %s", nm->valuestring, text);
-        resp = rpc_tool_text(id, text, is_err, session_id);
+        resp = rpc_tool_text(id, text, is_err, session_id);   /* text 已拷入 resp */
+        xSemaphoreGive(s_tool_mux);
         cJSON_Delete(req);
         return resp;
     }

@@ -984,7 +984,9 @@ void face_update(uint32_t dt_ms)
 
 void face_set_emotion(face_emotion_t e)
 {
-    if ((int)e >= FACE_COUNT || (int)e == s.cur) return;
+    /* ★ 必须同时判负数: 只判上界的话, 传进来 -1 会被一路写进 s.cur,
+       之后 FACES[s.cur] 就是越界读(崩溃级)。 */
+    if ((int)e < 0 || (int)e >= FACE_COUNT || (int)e == s.cur) return;
     s.prev = s.cur;
     s.cur = (int)e;
     s.morph = 0.0f;
@@ -1028,12 +1030,12 @@ void face_set_look(float offset) { s.manual_look = offset; }
 
 const char *face_emotion_name(face_emotion_t e)
 {
-    return ((int)e < FACE_COUNT) ? FACES[e].id : "UNKNOWN";
+    return ((int)e >= 0 && (int)e < FACE_COUNT) ? FACES[e].id : "UNKNOWN";
 }
 
 const char *face_emotion_cn(face_emotion_t e)
 {
-    return ((int)e < FACE_COUNT) ? FACES[e].cn : "?";
+    return ((int)e >= 0 && (int)e < FACE_COUNT) ? FACES[e].cn : "?";
 }
 
 uint8_t face_last_dirty_pages(void) { return s.dirty_pages; }
