@@ -5,7 +5,8 @@
  * 给桌面摆件机器人 (ESP32-S3 固件) 用的音乐代理。固件只会调下面 4 个接口,
  * 本服务端把它们翻译成网易云音乐的真实请求, 并代为携带登录 Cookie。
  *
- *   GET /api/search?keyword=<关键词>&limit=<N>          搜歌
+ *   GET /api/search?keyword=<词>&type=<1歌曲|100歌手|1000歌单>&limit=<N>   三类搜索
+ *   GET /api/artist/songs?id=<歌手id>&limit=<N>         某歌手的热门歌曲(歌手维度选曲)
  *   GET /api/user/playlists                             我的歌单(需登录)
  *   GET /api/playlist/songs?id=<歌单id>&limit=<N>       歌单里的歌
  *   GET /api/stream?id=<歌曲id>&br=<码率>               音频流(支持 Range 断点续传)
@@ -209,16 +210,28 @@ function json (res, code, obj) {
 const artistOf = t => Array.isArray(t.ar) ? t.ar.map(a => a.name).join('/')
   : (Array.isArray(t.artists) ? t.artists.map(a => a.name).join('/') : '')
 
+/* 搜索: type=1 歌曲 / 100 歌手 / 1000 歌单 —— 三类全支持。
+ * 返回结构随 type 不同: 歌曲带 artist, 歌手/歌单带 id+name(+count)。
+ * 这样"无论什么情况都好实现": 单曲全是翻唱就改搜歌手, 想听歌单就搜歌单。 */
 async function apiSearch (q) {
-  const kw = q.keyword || ''
+  const kw = (q.keyword || '').trim()
   const limit = Math.min(Number(q.limit) || 20, 100)
+  const type = Number(q.type) || 1
+  if (!kw) return { code: 400, message: 'missing keyword' }
   /* ★ 用老的 /weapi/search/get: 实测 cloudsearch 未登录会回 code 50000005 */
-  const d = await callWeapi('/api/search/get', { s: kw, type: 1, limit, offset: Number(q.offset) || 0 })
-  const songs = (d.result && d.result.songs) || []
-  return {
-    code: 200,
-    data: songs.map(s => ({ id: String(s.id), name: s.name || '', artist: artistOf(s) }))
+  const d = await callWeapi('/api/search/get', { s: kw, type, limit, offset: Number(q.offset) || 0 })
+  const result = d.result || {}
+  if (type === 100) {                       // 歌手搜索
+    const artists = result.artists || []
+    return { code: 200, type: 100, data: artists.map(a => ({ id: String(a.id), name: a.name || '' })) }
   }
+  if (type === 1000) {                      // 歌单搜索
+    const playlists = result.playlists || []
+    return { code: 200, type: 1000, data: playlists.map(p => ({ id: String(p.id), name: p.name || '', count: p.trackCount || 0 })) }
+  }
+  // type === 1 歌曲搜索
+  const songs = result.songs || []
+  return { code: 200, type: 1, data: songs.map(s => ({ id: String(s.id), name: s.name || '', artist: artistOf(s) })) }
 }
 
 async function apiPlaylists () {
@@ -247,6 +260,20 @@ async function apiPlaylistSongs (q) {
       name: t.name || '',
       artist: artistOf(t)
     }))
+  }
+}
+
+/* 取某歌手的热门歌曲(官方歌手页同款接口 /weapi/v1/artist/<id>)。
+ * 用于"歌手维度选曲": 搜歌名全是翻唱时, 改搜歌手→取其热门→匹配原版, 绕开翻唱。 */
+async function apiArtistSongs (q) {
+  const id = q.id
+  if (!id) return { code: 400, message: 'missing id' }
+  const d = await callWeapi('/api/v1/artist/' + id, {})
+  const songs = d.hotSongs || d.songs || []
+  return {
+    code: 200,
+    artist: (d.artist && d.artist.name) || '',
+    data: songs.map(s => ({ id: String(s.id), name: s.name || '', artist: artistOf(s) }))
   }
 }
 
@@ -401,6 +428,7 @@ const server = http.createServer(async (req, res) => {
 
     /* ---- 固件用的 4 个接口 ---- */
     if (p === '/api/search')         return json(res, 200, await apiSearch(q))
+    if (p === '/api/artist/songs')   return json(res, 200, await apiArtistSongs(q))
     if (p === '/api/user/playlists') return json(res, 200, await apiPlaylists())
     if (p === '/api/playlist/songs') return json(res, 200, await apiPlaylistSongs(q))
 

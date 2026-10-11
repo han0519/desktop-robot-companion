@@ -25,7 +25,7 @@
 | 人格引擎 | 心情/精力/无聊/亲密度四个内在状态，空闲时自己转头看、犯困打盹 |
 | 认同点头 | AI 回复里出现「你说得对/没错」会点头，出现「不对/错了」会摇头 |
 | 表情 | 52 种情绪，弹簧跟随 + 眨眼 + 呼吸 |
-| 在线音乐 | 网易云音乐（需自建代理 + 扫码登录），放歌时灯环律动 |
+| 在线音乐 | 网易云音乐**默认直连**（设备端 AES/RSA/MD5 现算，HTTPS 直连网易云，网页控制台扫码登录，无需自建服务器；也可选自建代理），放歌时灯环律动 |
 | 网页控制台 | 主页面 + 8 个子页面（音乐/表情/灯环/动作/声音/屏幕/网络/系统） |
 | 配网 | 开热点 + DNS 强制门户，手机连上自动弹配置页 |
 
@@ -36,20 +36,22 @@ main/                  固件源码 (ESP-IDF 5.5)
   xiaozhi.c            小智 AI 客户端 (WS + Opus + 唤醒词 + 状态机)
   persona.c            人格引擎 (心情/精力/无聊/亲密度 → 自主转头)
   music.c              网易云在线音乐 (网络读取/解码/播放/断点续传)
+  ne_client.c          网易云【直连】客户端 (AES-CBC+RSA+MD5 现算, HTTPS 直连 music.163.com, 扫码登录)
+  ne_probe.c           直连可行性探针 (开发期调试用)
   light.c              WS2812 灯效引擎 (含音乐律动)
   mcp.c                MCP 工具 (AI 可以控制灯/舵机/音量/音乐)
   web_page.h           网页控制台 (主页面 + 子页面)
 components/            本地组件 (face 表情 / servo / ws2812 / robot_audio ...)
-server/music_proxy.js  网易云音乐代理服务端 (零依赖, Node 18+)
+server/music_proxy.js  网易云音乐代理服务端 (可选, 零依赖, Node 18+)
 docs/WIRING.md         接线说明 (电源/充电/开关/各配件)
-docs/MUSIC_PROXY.md    音乐代理部署 + 扫码登录说明
+docs/MUSIC_PROXY.md    代理模式部署 + 扫码登录说明 (仅走代理时用)
 ```
 
 ## 快速开始
 
 ### 0. 不想编译？直接下固件
 
-到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载 v1.0.0 的 6 个附件，
+到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载最新版的固件附件，
 按 Release 说明里的 esptool 一条命令烧录即可（`srmodels.bin` 是唤醒词模型，别漏）。
 
 ### 1. 烧录固件
@@ -61,19 +63,24 @@ idf.py build
 idf.py -p COM5 erase-flash flash monitor
 ```
 
+> Windows 上也可以直接用仓库里的 `build_only.ps1`（一键编译）和 `flash.ps1 -Port COMx`（一键烧录）。
+
 首次开机设备会开热点 `Robot-Config`，手机连上后随便打开一个网页会自动弹出配置页，
 填家里 WiFi 的账号密码即可。
 
-### 2. 部署音乐代理（要用在线音乐才需要）
+### 2. 网易云音乐：默认直连，无需服务器
 
-```bash
-cd server
-node music_proxy.js          # 默认 3000 端口
-# 浏览器打开 http://<服务器IP>:3000/ 用网易云 APP 扫码登录
-```
+固件**默认直连网易云**（`main/ne_client.c`）：设备自己算加密参数（AES-CBC + RSA + MD5），
+HTTPS 直连 `music.163.com`，不依赖任何自建服务器。在网页控制台「音乐」页**扫码登录**一次即可
+搜索 / 播放 / 歌单 / 歌手热歌，登录态存 NVS，掉电不丢。
 
-然后在网页控制台「音乐」页填入代理地址，例如 `http://192.168.1.10:3000`。
-详见 [docs/MUSIC_PROXY.md](docs/MUSIC_PROXY.md)。
+> 老式**代理模式**（可选）才需要自建代理：
+> ```bash
+> cd server
+> node music_proxy.js          # 默认 3000 端口
+> # 浏览器打开 http://<服务器IP>:3000/ 用网易云 APP 扫码登录
+> ```
+> 然后在网页控制台「音乐」页填入代理地址（或填 `direct` 走直连），详见 [docs/MUSIC_PROXY.md](docs/MUSIC_PROXY.md)。
 
 ### 3. 连接小智服务器
 
