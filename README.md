@@ -68,6 +68,10 @@ idf.py -p COM5 erase-flash flash monitor
 首次开机设备会开热点 `Robot-Config`，手机连上后随便打开一个网页会自动弹出配置页，
 填家里 WiFi 的账号密码即可。
 
+> 💡 **设备码绑定**：首次配好网后，如果设备在 [xiaozhi.me](https://xiaozhi.me) 上**还未激活**，
+> 表情屏会循环显示**设备码**（如 `CODE: 123456`）。打开 xiaozhi.me 输入设备码完成绑定即可；
+> 绑定后设备码不再显示，唤醒词"你好小智"直接可用。
+
 ### 2. 网易云音乐：默认直连，无需服务器
 
 固件**默认直连网易云**（`main/ne_client.c`）：设备自己算加密参数（AES-CBC + RSA + MD5），

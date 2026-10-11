@@ -454,6 +454,7 @@ static void zx_send_hello(void)
     cJSON_AddStringToObject(o, "type", "hello");
     cJSON_AddNumberToObject(o, "version", 1);
     cJSON_AddStringToObject(o, "transport", "websocket");
+    cJSON_AddStringToObject(o, "language", "zh-CN");   /* 服务端按中文 TTS 播报(含激活码) */
     cJSON *ap = cJSON_AddObjectToObject(o, "audio_params");
     cJSON_AddStringToObject(ap, "format", "opus");
     cJSON_AddNumberToObject(ap, "sample_rate", SAMPLE_RATE);

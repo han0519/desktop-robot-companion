@@ -97,6 +97,17 @@ static bool     s_wifi_cfg_ok;            /* NVS 里是否配过 WiFi(没配过�
 /* STA 联网状态 (小智 AI 需要外网) */
 static bool s_sta_connected = false;
 
+/* 绑定码展示: 联网后若设备未激活(OTA 下发 activation.code), 在 OLED 屏上展示
+ * 一段时间, 让用户拿去 xiaozhi.me 绑定。BIND_WAIT_MS 内没拿到码 = 大概率已激活。 */
+#define BIND_WAIT_MS  10000    /* 联网后等激活码的最长时间(已激活则超时放弃) */
+#define BIND_SHOW_MS  120000   /* 绑定码展示时长: 2 分钟 */
+#define BIND_FACE_MS  60000    /* 期间让表情露脸 1 分钟, 未激活则循环展示 */
+static bool     s_bind_mode      = false;  /* true = 联网后正在等待/检测激活码 */
+static bool     s_bind_prev_sta  = false;  /* 上一帧的 STA 状态, 用于检测联网边沿 */
+static uint32_t s_bind_wait_ms   = 0;      /* 开始等待激活码的时刻 */
+static uint32_t s_bind_hold_ms   = 0;      /* >0 = 绑定码/表情循环展示中(当前阶段起点) */
+static bool     s_bind_face      = false;  /* 绑定码循环里当前是否在"表情露脸"阶段 */
+
 /* =========================================================================
    配网播报(小智的基本逻辑: 进配网要"提示"用户)
  * -------------------------------------------------------------------------
@@ -252,6 +263,14 @@ static void face_task(void *arg)
         last_tick = now;
         if (dt > 100) dt = 33;  /* 防止异常大跳 */
 
+        /* 刚连上 WiFi → 若设备未激活, 准备在屏幕展示绑定码 */
+        if (s_sta_connected && !s_bind_prev_sta) {
+            s_bind_mode     = true;
+            s_bind_wait_ms   = now;
+            s_bind_hold_ms   = 0;
+        }
+        s_bind_prev_sta = s_sta_connected;
+
         if (s_provisioning) {
             /* 配网阶段: 只刷配网页 + 播报一次(提示音 + 蓝灯 + 日志) */
             wifi_screen_tick(now);
@@ -268,13 +287,65 @@ static void face_task(void *arg)
                     ESP_LOGI(TAG, "灯已恢复: %s", light_effect_cn(s_prov_saved_eff));
                 }
                 face_set_auto_cycle(true);
+                /* 配网完成: 若设备未激活, 由 else 分支的绑定码逻辑接管屏幕 */
+                s_bind_mode     = true;
+                s_bind_wait_ms   = now;
+                s_bind_hold_ms   = 0;
+                s_bind_face      = false;
                 face_set_emotion(FACE_HELLO);
                 face_force_full();      /* 整屏覆盖配网页, 不留残影 */
-                ESP_LOGI(TAG, "配网完成 → 进入表情系统, 说「你好小智」即可对话");
+                ESP_LOGI(TAG, "配网完成 → 若设备未激活, 屏幕将展示绑定码, 请去 xiaozhi.me 绑定");
             }
         } else {
-            if (datapage_active()) datapage_update(dt);   /* 数据页接管屏幕 */
-        else face_update(dt);
+            /* 未激活时: 绑定码(2分钟) ↔ 表情(1分钟) 循环展示, 直到绑定后重启 */
+            if (s_bind_hold_ms) {
+                uint32_t phase = now - s_bind_hold_ms;
+                if (s_bind_face) {
+                    /* 表情露脸阶段 */
+                    if (datapage_active()) datapage_update(dt);
+                    else face_update(dt);
+                    if (phase >= BIND_FACE_MS) {
+                        const char *code = ai_client_activation_code();
+                        if (code && code[0]) {
+                            wifi_screen_bind(code, s_sta_ip);   /* 回到绑定码页 */
+                            s_bind_hold_ms = now;
+                            s_bind_face    = false;
+                        } else {
+                            s_bind_hold_ms = 0;               /* 已激活, 结束循环 */
+                            s_bind_face    = false;
+                            face_force_full();
+                        }
+                    }
+                } else {
+                    /* 绑定码阶段: 每 500ms 整屏重画+闪烁 */
+                    wifi_screen_tick(now);
+                    if (phase >= BIND_SHOW_MS) {
+                        s_bind_face    = true;                /* 露脸一会 */
+                        s_bind_hold_ms = now;
+                        face_set_emotion(FACE_HELLO);
+                        face_force_full();
+                    }
+                }
+            } else {
+                /* 联网后等待激活码: 拿到就在屏幕展示, 超时(已激活)则放弃 */
+                if (s_bind_mode) {
+                    const char *code = ai_client_activation_code();
+                    if (code && code[0]) {
+                        wifi_screen_bind(code, s_sta_ip);
+                        s_bind_hold_ms = now;
+                        s_bind_face    = false;
+                        s_bind_mode    = false;
+                        ESP_LOGW(TAG, "设备未激活, 屏幕展示绑定码: %s (去 xiaozhi.me 绑定)", code);
+                    } else if (now - s_bind_wait_ms >= BIND_WAIT_MS) {
+                        s_bind_mode = false;
+                    }
+                }
+                /* 若本帧刚切到绑定码展示, 不能再画表情, 否则会把绑定码页覆盖掉 */
+                if (!s_bind_hold_ms) {
+                    if (datapage_active()) datapage_update(dt);   /* 数据页接管屏幕 */
+                    else face_update(dt);
+                }
+            }
 
             /* 已配网但一直连不上(密码错/路由不在): 超时后退回配网页, 否则用户永远
                回不到配网流程。路由恢复后会自动重连并自动切回表情, 不用重启。 */
@@ -286,6 +357,9 @@ static void face_task(void *arg)
                     s_wifi_fail_ms = 0;
                     s_prov_ok_ms   = 0;
                     s_provisioning = true;
+                    s_bind_hold_ms = 0;
+                    s_bind_mode    = false;
+                    s_bind_face    = false;
                     face_set_auto_cycle(false);
                     wifi_screen_failed(AP_SSID, AP_PASS);
                     ESP_LOGW(TAG, "连不上 WiFi「%s」→ 退回配网模式; 手机连 %s 打开 192.168.4.1 重新填",

@@ -29,6 +29,9 @@ void wifi_screen_ok(const char *ip);
 /** 连不上路由: 提示失败, 并把热点信息再列一遍方便重新配 */
 void wifi_screen_failed(const char *ap_ssid, const char *ap_pass);
 
+/** 设备未激活: 显示绑定码(去 xiaozhi.me 添加设备用) */
+void wifi_screen_bind(const char *code, const char *ip);
+
 /**
  * @brief 由 UI 任务每帧调用: 画闪烁指示并刷新
  * @param now_ms 当前毫秒

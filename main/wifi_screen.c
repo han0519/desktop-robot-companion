@@ -225,14 +225,33 @@ void wifi_screen_failed(const char *ap_ssid, const char *ap_pass)
     flush_full();
 }
 
+void wifi_screen_bind(const char *code, const char *ip)
+{
+    memset(&s_ws, 0, sizeof(s_ws));
+    snprintf(s_ws.banner, sizeof(s_ws.banner), "BIND DEVICE");
+    s_ws.invert_banner = true;
+    s_ws.blink = true;
+    if (code && code[0])
+        snprintf(s_ws.line[0], sizeof(s_ws.line[0]), "CODE: %.*s",
+                 MAX_COLS - 6, code);
+    snprintf(s_ws.line[1], sizeof(s_ws.line[1]), "AT XIAOZHI.ME");
+    if (ip && ip[0])
+        snprintf(s_ws.line[2], sizeof(s_ws.line[2]), "IP: %.*s",
+                 MAX_COLS - 4, ip);
+    flush_full();
+}
+
 void wifi_screen_tick(uint32_t now_ms)
 {
     if (!s_ws.blink) return;
 
-    /* 每 500ms 翻转一次; 只改第 7 页并只发这一页, 几乎不占 I2C */
+    /* 每 500ms 翻转一次; 翻转时整屏重画(先 flush_full 再画闪烁块),
+     * 防止绑定码/配网页被其它绘制(如表情帧)覆盖后只剩残影。 */
     bool on = ((now_ms / 500) & 1) != 0;
     if (on == s_ws.blink_on) return;
     s_ws.blink_on = on;
+
+    flush_full();
 
     int x0 = (SCR_W - BLINK_SZ) / 2;
     for (int x = x0; x < x0 + BLINK_SZ; x++)
