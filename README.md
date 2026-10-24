@@ -58,6 +58,10 @@ docs/MUSIC_PROXY.md    代理模式部署 + 扫码登录说明 (仅走代理时�
 用 USB 数据线连接板子 → 点「连接并烧录」→ 选择串口 → 等进度条走完即可。
 固件由页面同源托管，烧录全过程在浏览器和板子之间完成，不经过任何服务器。
 
+页面还有「🔧 自定义固件」模式：可选芯片（ESP32 / S2 / S3 / C2 / C3 / C5 / C6 / C61 / H2 / P4 / 8266）、
+添加本地 .bin 文件并分别指定烧录地址（支持地址重叠校验），适合刷其他 ESP32 项目。
+文件只在浏览器本地读取，不会上传。
+
 也可以到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载固件附件，
 按 Release 说明里的 esptool 一条命令烧录即可（`srmodels.bin` 是唤醒词模型，别漏）。
 
