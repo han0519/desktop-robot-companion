@@ -13,6 +13,8 @@
     --brand: #4f6ef7;
     --brand-deep: #3b53d6;
     --line: #e4e9f5;
+    --err: #dc2626;
+    --err-bg: #fef2f2;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -24,11 +26,11 @@
   }
   .wrap { max-width: 860px; margin: 0 auto; padding: 48px 20px 60px; }
 
-  .hero { text-align: center; margin-bottom: 36px; }
-  .hero .logo { font-size: 56px; line-height: 1; margin-bottom: 14px; }
-  .hero h1 { font-size: 30px; font-weight: 800; letter-spacing: 0.5px; }
-  .hero p.sub { color: var(--ink-soft); margin-top: 10px; font-size: 15px; }
-  .badges { margin-top: 14px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .hero { text-align: center; margin-bottom: 30px; }
+  .hero .logo { font-size: 52px; line-height: 1; margin-bottom: 12px; }
+  .hero h1 { font-size: 28px; font-weight: 800; letter-spacing: 0.5px; }
+  .hero p.sub { color: var(--ink-soft); margin-top: 8px; font-size: 15px; }
+  .badges { margin-top: 12px; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
   .badge {
     font-size: 12px; color: var(--brand-deep); background: #e8edff;
     border: 1px solid #d4ddff; border-radius: 999px; padding: 3px 12px; font-weight: 600;
@@ -36,14 +38,23 @@
 
   .card {
     background: var(--card); border: 1px solid var(--line); border-radius: 18px;
-    padding: 26px 28px; margin-bottom: 18px;
+    padding: 24px 26px; margin-bottom: 18px;
     box-shadow: 0 6px 24px rgba(31, 45, 100, 0.06);
   }
   .card h2 { font-size: 17px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
   .card h2 .ico { font-size: 20px; }
 
-  .flashbox { text-align: center; padding: 34px 28px 30px; }
-  .flashbox .tip { color: var(--ink-soft); font-size: 14px; margin-bottom: 20px; }
+  /* ---- 模式切换 ---- */
+  .modes { display: flex; gap: 8px; background: #eef1fb; border-radius: 12px; padding: 5px; margin-bottom: 20px; }
+  .modes button {
+    flex: 1; border: none; outline: none; cursor: pointer; border-radius: 9px;
+    padding: 10px 8px; font-size: 14.5px; font-weight: 700; font-family: inherit;
+    background: transparent; color: var(--ink-soft); transition: all .15s ease;
+  }
+  .modes button.active { background: #fff; color: var(--brand-deep); box-shadow: 0 2px 8px rgba(31,45,100,.10); }
+
+  .flashbox { text-align: center; padding: 28px 26px 26px; }
+  .flashbox .tip { color: var(--ink-soft); font-size: 14px; margin-bottom: 18px; }
   .flashbox .tip b { color: var(--ink); }
 
   esp-web-install-button { display: inline-block; }
@@ -67,14 +78,64 @@
   }
   .warnbox.show { display: block; }
 
+  .errbox {
+    display: none; margin-top: 14px; text-align: left;
+    background: var(--err-bg); border: 1px solid #fecaca; color: var(--err);
+    border-radius: 12px; padding: 12px 16px; font-size: 13.5px; font-weight: 600;
+  }
+  .errbox.show { display: block; }
+
+  /* ---- 自定义面板 ---- */
+  #customPanel { display: none; text-align: left; }
+  #customPanel.show { display: block; }
+  .field-label { font-size: 13.5px; font-weight: 700; color: var(--ink); margin: 14px 0 6px; }
+  .field-label .req { color: var(--err); }
+  select, input[type="text"] {
+    width: 100%; border: 1px solid var(--line); border-radius: 10px; outline: none;
+    padding: 10px 12px; font-size: 14.5px; font-family: inherit; background: #fbfcff; color: var(--ink);
+  }
+  select:focus, input[type="text"]:focus { border-color: var(--brand); background: #fff; }
+  select:disabled { color: #9aa3b8; }
+
+  .frow {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; margin-top: 8px;
+    background: #fbfcff;
+  }
+  .frow .fbtn {
+    border: 1px solid #d4ddff; background: #eef2ff; color: var(--brand-deep);
+    border-radius: 8px; padding: 7px 14px; font-size: 13.5px; font-weight: 700;
+    cursor: pointer; font-family: inherit; white-space: nowrap;
+  }
+  .frow .fbtn:hover { background: #e3eaff; }
+  .frow .fname { flex: 1; min-width: 120px; font-size: 13.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frow .fname.empty { color: #9aa3b8; }
+  .frow .foff { width: 130px; }
+  .frow .fsize { font-size: 12.5px; color: var(--ink-soft); white-space: nowrap; }
+  .frow .fdel {
+    border: none; background: transparent; color: #b6bdd0; font-size: 15px;
+    cursor: pointer; padding: 4px 8px; border-radius: 6px; font-family: inherit;
+  }
+  .frow .fdel:hover { color: var(--err); background: var(--err-bg); }
+  .frow.hasfile { border-color: #c9d6ff; background: #f6f8ff; }
+  .addbtn {
+    margin-top: 10px; border: 1.5px dashed #c9d6ff; background: transparent; color: var(--brand-deep);
+    border-radius: 10px; padding: 9px 18px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit;
+  }
+  .addbtn:hover { background: #f2f5ff; }
+  .hint { font-size: 12.5px; color: var(--ink-soft); margin-top: 10px; }
+  .hint code { background: #eef1fb; border-radius: 5px; padding: 1px 6px; font-size: 12px; color: var(--brand-deep); }
+  .total-line { font-size: 13px; color: var(--ink-soft); margin-top: 10px; font-weight: 600; }
+  .total-line b { color: var(--ink); }
+
   .steps { list-style: none; counter-reset: step; }
   .steps li {
-    counter-increment: step; position: relative; padding: 10px 0 10px 52px;
+    counter-increment: step; position: relative; padding: 9px 0 9px 52px;
     border-bottom: 1px dashed var(--line); font-size: 15px;
   }
   .steps li:last-child { border-bottom: none; }
   .steps li::before {
-    content: counter(step); position: absolute; left: 0; top: 12px;
+    content: counter(step); position: absolute; left: 0; top: 11px;
     width: 34px; height: 34px; border-radius: 50%;
     background: #e8edff; color: var(--brand-deep); font-weight: 800; font-size: 15px;
     display: flex; align-items: center; justify-content: center;
@@ -83,24 +144,25 @@
   .steps .muted { color: var(--ink-soft); font-size: 13.5px; }
 
   .after { font-size: 15px; }
-  .after li { margin: 8px 0 8px 20px; }
+  .after li { margin: 7px 0 7px 20px; }
   .after b { color: var(--brand-deep); }
 
-  .faq details { border-bottom: 1px solid var(--line); padding: 12px 0; }
+  .faq details { border-bottom: 1px solid var(--line); padding: 11px 0; }
   .faq details:last-child { border-bottom: none; }
   .faq summary { cursor: pointer; font-weight: 600; font-size: 15px; list-style: none; }
   .faq summary::before { content: "▸ "; color: var(--brand); }
   .faq details[open] summary::before { content: "▾ "; }
-  .faq .ans { color: var(--ink-soft); font-size: 14px; padding: 8px 0 4px; }
+  .faq .ans { color: var(--ink-soft); font-size: 14px; padding: 7px 0 3px; }
 
-  .footer { text-align: center; color: var(--ink-soft); font-size: 13px; margin-top: 26px; }
+  .footer { text-align: center; color: var(--ink-soft); font-size: 13px; margin-top: 24px; }
   .footer a { color: var(--brand-deep); text-decoration: none; font-weight: 600; }
   .footer a:hover { text-decoration: underline; }
 
   @media (max-width: 560px) {
-    .hero h1 { font-size: 24px; }
+    .hero h1 { font-size: 23px; }
     .bigbtn { font-size: 16px; padding: 14px 34px; }
-    .card { padding: 20px; }
+    .card { padding: 18px; }
+    .frow .foff { width: 110px; }
   }
 </style>
 </head>
@@ -112,18 +174,59 @@
     <h1>桌面小纸壳 · 网页烧录</h1>
     <p class="sub">无需安装任何软件，用浏览器直接把固件写进板子</p>
     <div class="badges">
-      <span class="badge">固件 v1.1.1</span>
-      <span class="badge">ESP32-S3</span>
-      <span class="badge">含网易云直连</span>
-      <span class="badge">含设备码绑定</span>
+      <span class="badge">小纸壳固件 v1.1.1</span>
+      <span class="badge">支持自定义固件</span>
+      <span class="badge">ESP32 全系</span>
     </div>
   </div>
 
   <div class="card flashbox">
-    <p class="tip">用 <b>USB 数据线</b>把板子连接到电脑，然后点击下面按钮<br>（在弹窗里选择板子的串口，等待进度条走完即可）</p>
-    <esp-web-install-button id="installBtn" manifest="manifest.json">
-      <button slot="activate" class="bigbtn">🔌 连接并烧录</button>
-    </esp-web-install-button>
+    <div class="modes">
+      <button id="modeBundled" class="active" type="button">🤖 小纸壳固件</button>
+      <button id="modeCustom" type="button">🔧 自定义固件</button>
+    </div>
+
+    <!-- 模式一：内置小纸壳固件 -->
+    <div id="bundledPanel">
+      <p class="tip">用 <b>USB 数据线</b>把板子连接到电脑，然后点击下面按钮<br>（在弹窗里选择板子的串口，等待进度条走完即可）</p>
+    </div>
+
+    <!-- 模式二：自定义固件 / 自定义开发板 -->
+    <div id="customPanel">
+      <div class="field-label">开发板芯片 <span class="req">*</span><span style="font-weight:400;color:var(--ink-soft);font-size:12.5px;">（必须和板子实际芯片一致，选错会提示不支持）</span></div>
+      <select id="chipSel">
+        <option>ESP32-S3</option>
+        <option>ESP32</option>
+        <option>ESP32-S2</option>
+        <option>ESP32-C3</option>
+        <option>ESP32-C6</option>
+        <option>ESP32-C61</option>
+        <option>ESP32-C5</option>
+        <option>ESP32-C2</option>
+        <option>ESP32-H2</option>
+        <option>ESP32-P4</option>
+        <option>ESP8266</option>
+        <option disabled>── ESP32-S31（当前烧录库暂不支持，请用 esptool 命令行）──</option>
+      </select>
+
+      <div class="field-label">固件文件与烧录地址 <span class="req">*</span><span style="font-weight:400;color:var(--ink-soft);font-size:12.5px;">（地址支持 0x 开头十六进制或十进制）</span></div>
+      <div id="fileRows"></div>
+      <button class="addbtn" id="addRowBtn" type="button">＋ 添加文件</button>
+
+      <div class="total-line" id="totalLine">共 <b>0</b> 个文件，<b>0 B</b></div>
+      <div class="errbox" id="customErr"></div>
+      <div class="hint">
+        常用地址：bootloader <code>0x0</code>、分区表 <code>0x8000</code>、ota_data <code>0xf000</code>、
+        应用固件一般为 <code>0x10000</code> 或 <code>0x120000</code>（以你工程的构建输出为准）。
+        各文件地址区间<b>不能重叠</b>。文件只在你的浏览器本地读取，<b>不会上传</b>到任何服务器。
+      </div>
+    </div>
+
+    <div style="margin-top:20px">
+      <esp-web-install-button id="installBtn" manifest="manifest.json">
+        <button slot="activate" class="bigbtn" id="flashBtn">🔌 连接并烧录</button>
+      </esp-web-install-button>
+    </div>
     <div class="warnbox" id="browserWarn">
       ⚠️ 当前浏览器不支持网页烧录。请改用 <b>Google Chrome</b> 或 <b>Microsoft Edge</b>
       （版本 89 以上），并且要通过 <b>https://</b> 网址访问本页面。手机浏览器暂不支持。
@@ -152,20 +255,24 @@
   <div class="card faq">
     <h2><span class="ico">❓</span>常见问题</h2>
     <details>
+      <summary>「自定义固件」模式怎么用？</summary>
+      <div class="ans">切到「🔧 自定义固件」→ 选择板子芯片（如 ESP32-S3）→ 点「添加文件」选择 .bin 文件并填写烧录地址（如 bootloader 填 0x0）→ 点「连接并烧录」。可以添加多个文件分别写到不同地址，适合刷其他 ESP32 项目（如 ESPHome、Tasmota、自己的 Arduino/IDF 工程等）。</div>
+    </details>
+    <details>
+      <summary>自定义模式支持哪些芯片？文件会上传吗？</summary>
+      <div class="ans">支持 ESP32 / ESP32-S2 / ESP32-S3 / ESP32-C2 / C3 / C5 / C6 / C61 / ESP32-H2 / ESP32-P4 / ESP8266。ESP32-S31 太新，当前网页烧录库还不支持，需要用 esptool 命令行烧录。<b>所有文件只在浏览器本地内存中读取，不会上传到任何服务器。</b></div>
+    </details>
+    <details>
       <summary>点按钮后弹窗里看不到串口 / 烧录失败怎么办？</summary>
       <div class="ans">依次尝试：① 换一根确定能传数据的 USB 线；② 换个 USB 口（尽量直插主板，不用 hub）；③ 安装 CH340/CP2102 驱动（部分国产板子需要）；④ 如果卡在「连接中」，按住板子上的 BOOT 键不放、点一下 RESET 键，让板子强制进入下载模式。</div>
     </details>
     <details>
       <summary>烧录会清掉板子里原来的东西吗？</summary>
-      <div class="ans">会。烧录过程会擦除 Flash（弹窗里会有「擦除设备」选项，建议勾选），原来的 WiFi 配置、登录信息都会被清掉，烧录后需要重新配网 —— 这正是新板子开箱应有的状态。</div>
+      <div class="ans">弹窗里会有「擦除设备」选项，建议勾选，原来的 WiFi 配置、登录信息都会被清掉，烧录后需要重新配网 —— 这正是新板子开箱应有的状态。</div>
     </details>
     <details>
       <summary>为什么必须用 Chrome / Edge？</summary>
       <div class="ans">网页烧录依赖浏览器提供的 Web Serial 串口能力，目前只有 Chrome / Edge（89+）支持，Firefox 和 Safari 暂不支持。另外页面必须是 https 访问（GitHub Pages 自动满足）。</div>
-    </details>
-    <details>
-      <summary>烧录的是哪个版本的固件？</summary>
-      <div class="ans">当前是 v1.1.1（屏幕设备码绑定 + 中文播报 + 网易云直连）。后续更新会发布到 GitHub Releases，并把新固件同步到这个页面。</div>
     </details>
   </div>
 
@@ -178,16 +285,6 @@
 </div>
 
 <script type="module" src="./install-button.js"></script>
-<script>
-  // 浏览器兼容性检查：没有 Web Serial 或不安全上下文时给出提示
-  (function () {
-    var supported = ('serial' in navigator) && window.isSecureContext;
-    if (!supported) {
-      document.getElementById('browserWarn').classList.add('show');
-      var btn = document.querySelector('#installBtn');
-      if (btn) { btn.setAttribute('install-unsupported', ''); btn.style.display = 'none'; }
-    }
-  })();
-</script>
+<script src="./app.js"></script>
 </body>
 </html>
