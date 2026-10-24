@@ -51,7 +51,14 @@ docs/MUSIC_PROXY.md    代理模式部署 + 扫码登录说明 (仅走代理时�
 
 ### 0. 不想编译？直接下固件
 
-到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载最新版的固件附件，
+**最简单：网页一键烧录**（无需安装任何软件，Chrome / Edge 打开即用）：
+
+👉 **https://han0519.github.io/desktop-robot-companion/**
+
+用 USB 数据线连接板子 → 点「连接并烧录」→ 选择串口 → 等进度条走完即可。
+固件由页面同源托管，烧录全过程在浏览器和板子之间完成，不经过任何服务器。
+
+也可以到 [Releases](https://github.com/han0519/desktop-robot-companion/releases) 下载固件附件，
 按 Release 说明里的 esptool 一条命令烧录即可（`srmodels.bin` 是唤醒词模型，别漏）。
 
 ### 1. 烧录固件
